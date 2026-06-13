@@ -124,6 +124,15 @@ function updateTitle(state: AppState) {
   return state.updates.message || 'Check for updates'
 }
 
+function versionTitle(state: AppState) {
+  const latest = state.updates.latestVersion
+  if (latest && latest !== state.updates.currentVersion) {
+    return `Installed ${state.updates.currentVersion}, latest ${latest}`
+  }
+
+  return `Installed ${state.updates.currentVersion}`
+}
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
@@ -395,6 +404,10 @@ function App() {
             </div>
           ))}
         </section>
+
+        <div className="version-chip" title={versionTitle(state)}>
+          v{state.updates.currentVersion}
+        </div>
       </aside>
 
       <section className="workspace">

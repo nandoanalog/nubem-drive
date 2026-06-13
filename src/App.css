@@ -1006,6 +1006,23 @@ button:disabled {
   gap: 7px;
 }
 
+.version-chip {
+  margin-top: auto;
+  max-width: 64px;
+  overflow: hidden;
+  padding: 5px 7px;
+  border: 1px solid #ded8ce;
+  border-radius: 7px;
+  color: #5d6662;
+  background: #fffdf8;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .device-row {
   display: flex;
   align-items: center;
