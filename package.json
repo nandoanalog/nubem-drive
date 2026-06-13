@@ -14,8 +14,6 @@
     "dist:linux": "npm run build && electron-builder --linux deb --x64",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "dist:all": "npm run build && electron-builder --linux deb --win nsis --x64",
-    "install:nemo": "node scripts/install-nemo-action.cjs",
-    "cloud-folder": "node scripts/cloud-folder.cjs",
     "electron": "node scripts/start-electron.cjs",
     "lint": "eslint .",
     "preview": "vite preview"

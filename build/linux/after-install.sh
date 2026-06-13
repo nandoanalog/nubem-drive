@@ -3,6 +3,8 @@ set -e
 
 mkdir -p /usr/share/nemo/actions
 
+find /home /root -path '*/.local/share/nemo/actions/nubem-cloud-folder.nemo_action' -type f -delete 2>/dev/null || true
+
 cat > /usr/bin/nubem-drive-cloud-folder <<'EOF'
 #!/bin/sh
 exec "/opt/Nubem Drive/nubem-drive" --cloud-folder "$@"
