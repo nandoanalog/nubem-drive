@@ -1048,7 +1048,7 @@ const updateMessage = (status, fallback = '') => {
     checking: 'Checking',
     available: 'Update available',
     downloading: 'Downloading update',
-    ready: 'Ready to install',
+    ready: 'Installing soon',
     installing: 'Installing update',
     error: fallback || 'Update failed',
   };
@@ -1108,7 +1108,7 @@ const selectUpdateAsset = (manifest) => {
   };
 };
 
-const checkForUpdates = async ({ autoDownload = false } = {}) => {
+const checkForUpdates = async ({ autoDownload = false, autoInstall = false } = {}) => {
   if (updateWork) return updateWork;
 
   updateWork = (async () => {
@@ -1149,9 +1149,9 @@ const checkForUpdates = async ({ autoDownload = false } = {}) => {
         progress: 0,
       });
 
-      if (autoDownload) {
+      if (autoDownload || autoInstall) {
         updateWork = null;
-        return downloadUpdate();
+        return downloadUpdate({ autoInstall });
       }
 
       return nextState;
@@ -1178,12 +1178,12 @@ const sha256File = (filePath) =>
     stream.on('end', () => resolve(hash.digest('hex')));
   });
 
-const downloadUpdate = async () => {
+const downloadUpdate = async ({ autoInstall = false } = {}) => {
   if (updateWork) return updateWork;
 
   const state = ensureState();
   if (!state.updates.downloadUrl) {
-    return checkForUpdates({ autoDownload: true });
+    return checkForUpdates({ autoDownload: true, autoInstall });
   }
 
   updateWork = (async () => {
@@ -1219,15 +1219,24 @@ const downloadUpdate = async () => {
       }
 
       if (Notification.isSupported()) {
-        new Notification({ title: 'Nubem Drive', body: 'Update ready' }).show();
+        new Notification({
+          title: 'Nubem Drive',
+          body: autoInstall ? 'Installing update' : 'Update ready',
+        }).show();
       }
 
-      return writeUpdateState({
+      const readyState = writeUpdateState({
         status: 'ready',
         message: updateMessage('ready'),
         downloadedPath: targetPath,
         progress: 100,
       });
+
+      if (autoInstall) {
+        return installUpdate();
+      }
+
+      return readyState;
     } catch (error) {
       return writeUpdateState({
         status: 'error',
@@ -1287,11 +1296,11 @@ const scheduleUpdateChecks = () => {
   if (isDev) return;
 
   setTimeout(() => {
-    checkForUpdates({ autoDownload: true }).catch(() => undefined);
+    checkForUpdates({ autoDownload: true, autoInstall: true }).catch(() => undefined);
   }, 8000);
 
   updateTimer = setInterval(() => {
-    checkForUpdates({ autoDownload: true }).catch(() => undefined);
+    checkForUpdates({ autoDownload: true, autoInstall: true }).catch(() => undefined);
   }, 6 * 60 * 60 * 1000);
 };
 
