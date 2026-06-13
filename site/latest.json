@@ -1,11 +1,11 @@
 {
-  "latest": "0.0.6",
+  "latest": "0.0.7",
   "platforms": {
     "linux-x64": {
-      "version": "0.0.6",
-      "url": "https://drive.nubem.org/downloads/Nubem-Drive-0.0.6-amd64.deb",
-      "fileName": "Nubem-Drive-0.0.6-amd64.deb",
-      "sha256": "c0b965bfbf59516937ee838decc227166664b00878b7f3e31948cdfd5dba3bc4",
+      "version": "0.0.7",
+      "url": "https://drive.nubem.org/downloads/Nubem-Drive-0.0.7-amd64.deb",
+      "fileName": "Nubem-Drive-0.0.7-amd64.deb",
+      "sha256": "0e33c2d97cf122cae319eae0b75a676eaa42bd8aeecef43de8d5cab4950a80a1",
       "type": "deb"
     },
     "win32-x64": {

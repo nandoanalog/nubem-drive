@@ -42,14 +42,6 @@ const updateDefaults = (updates = {}) => ({
 const makeInitialState = () => {
   const deviceId = crypto.randomUUID();
 
-  const folders = Array.isArray(state.folders)
-    ? state.folders.map((folder) => ({
-        ...folder,
-        vaultRole: folder.vaultRole || (folder.pairId && pairing.role === 'client' ? 'client' : 'storage'),
-        relayUrl: normalizeRelayUrl(folder.relayUrl || pairing.relayUrl || defaultRelayUrl),
-      }))
-    : [];
-
   return {
     storageNode: {
       name: `${os.hostname()} storage`,
@@ -114,6 +106,14 @@ const normalizeState = (rawState) => {
   };
 
   pairing.relayUrl = normalizeRelayUrl(pairing.relayUrl);
+
+  const folders = Array.isArray(state.folders)
+    ? state.folders.map((folder) => ({
+        ...folder,
+        vaultRole: folder.vaultRole || (folder.pairId && pairing.role === 'client' ? 'client' : 'storage'),
+        relayUrl: normalizeRelayUrl(folder.relayUrl || pairing.relayUrl || defaultRelayUrl),
+      }))
+    : [];
 
   const localDevice = {
     id: currentDevice.id,
