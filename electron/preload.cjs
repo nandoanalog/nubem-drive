@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld('nubemDrive', {
   joinPairing: (relayUrl, code) => ipcRenderer.invoke('pairing:join', relayUrl, code),
   refreshPairing: () => ipcRenderer.invoke('pairing:refresh'),
   resetPairing: () => ipcRenderer.invoke('pairing:reset'),
+  browseRemoteFolder: (folderId, relativePath) => ipcRenderer.invoke('remote:browse', folderId, relativePath),
+  downloadRemoteFile: (folderId, relativePath) => ipcRenderer.invoke('remote:download', folderId, relativePath),
 });

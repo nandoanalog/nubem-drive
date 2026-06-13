@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   AlertTriangle,
+  ArrowUp,
   CheckCircle2,
   Cloud,
   Download,
   ExternalLink,
+  FileText,
   Folder,
+  FolderOpen,
   HardDrive,
   KeyRound,
   Laptop,
@@ -22,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, LocalMode } from './types'
+import type { AppState, CloudFolder, FolderStatus, LocalMode, RemoteEntry, RemoteListing } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'code' | 'join' | 'reset' | null
@@ -187,8 +190,12 @@ function App() {
   const [pairCode, setPairCode] = useState('')
   const [pairBusy, setPairBusy] = useState<PairBusy>(null)
   const [pairError, setPairError] = useState('')
+  const [remoteListing, setRemoteListing] = useState<RemoteListing | null>(null)
+  const [remoteBusy, setRemoteBusy] = useState(false)
+  const [remoteError, setRemoteError] = useState('')
 
   const api = window.nubemDrive
+  const isClient = state.pairing.role === 'client'
 
   useEffect(() => {
     let active = true
@@ -239,6 +246,44 @@ function App() {
   }, [filter, query, state.folders])
 
   const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
+  const selectedFolderId = selectedFolder?.id
+
+  useEffect(() => {
+    let active = true
+
+    async function loadRemoteRoot() {
+      if (!api || !selectedFolderId || !isClient || state.pairing.status !== 'linked') {
+        setRemoteListing(null)
+        setRemoteError('')
+        return
+      }
+
+      setRemoteBusy(true)
+      setRemoteError('')
+
+      try {
+        const listing = await api.browseRemoteFolder(selectedFolderId, '')
+        if (active) {
+          setRemoteListing(listing)
+        }
+      } catch (error) {
+        if (active) {
+          setRemoteError(error instanceof Error ? error.message : 'Could not browse')
+        }
+      } finally {
+        if (active) {
+          setRemoteBusy(false)
+        }
+      }
+    }
+
+    loadRemoteRoot()
+
+    return () => {
+      active = false
+    }
+  }, [api, isClient, selectedFolderId, state.pairing.status])
+
   async function chooseFolders() {
     if (!api) return
     const nextState = await api.chooseFolders()
@@ -260,6 +305,32 @@ function App() {
 
   function revealFolder(folder: CloudFolder) {
     api?.revealFolder(folder.path)
+  }
+
+  async function browseRemotePath(relativePath: string) {
+    if (!api || !selectedFolder) return
+    setRemoteBusy(true)
+    setRemoteError('')
+    try {
+      setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, relativePath))
+    } catch (error) {
+      setRemoteError(error instanceof Error ? error.message : 'Could not browse')
+    } finally {
+      setRemoteBusy(false)
+    }
+  }
+
+  async function downloadRemoteEntry(entry: RemoteEntry) {
+    if (!api || !selectedFolder || entry.type !== 'file') return
+    setRemoteBusy(true)
+    setRemoteError('')
+    try {
+      await api.downloadRemoteFile(selectedFolder.id, entry.relativePath)
+    } catch (error) {
+      setRemoteError(error instanceof Error ? error.message : 'Could not download')
+    } finally {
+      setRemoteBusy(false)
+    }
   }
 
   async function createPairCode() {
@@ -340,7 +411,7 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>Folders</h1>
+            <h1>{isClient ? 'Cloud' : 'Folders'}</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -355,9 +426,11 @@ function App() {
             >
               <Link2 size={18} />
             </button>
-            <button className="primary-button icon-only" onClick={chooseFolders} title="Add folder" aria-label="Add folder">
-              <Plus size={18} />
-            </button>
+            {!isClient ? (
+              <button className="primary-button icon-only" onClick={chooseFolders} title="Add folder" aria-label="Add folder">
+                <Plus size={18} />
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -432,11 +505,13 @@ function App() {
                   </button>
                 </div>
 
-                <div className="quick-actions">
-                  <button onClick={() => revealFolder(selectedFolder)} title={selectedFolder.path} aria-label="Reveal folder">
-                    <ExternalLink size={15} />
-                  </button>
-                </div>
+                {!isClient ? (
+                  <div className="quick-actions">
+                    <button onClick={() => revealFolder(selectedFolder)} title={selectedFolder.path} aria-label="Reveal folder">
+                      <ExternalLink size={15} />
+                    </button>
+                  </div>
+                ) : null}
 
                 <div className="meta-strip">
                   <span title="Size">{selectedFolder.sizeLabel}</span>
@@ -445,41 +520,53 @@ function App() {
                   <span title="Devices">{selectedFolder.devices.length}</span>
                 </div>
 
-                <section className="control-section" aria-label="Local mode">
-                  <div className="mode-stack">
-                    {(['online', 'local', 'mirror'] as LocalMode[]).map((mode) => {
-                      const Icon = modeIcons[mode]
-                      return (
-                        <button
-                          className={selectedFolder.localMode === mode ? 'mode-option selected' : 'mode-option'}
-                          key={mode}
-                          title={modeCopy[mode]}
-                          aria-label={modeCopy[mode]}
-                          onClick={() => setFolderMode(selectedFolder, mode)}
-                        >
-                          <Icon size={18} />
-                        </button>
-                      )
-                    })}
-                  </div>
-                </section>
+                {isClient ? (
+                  <RemoteBrowser
+                    busy={remoteBusy}
+                    error={remoteError}
+                    listing={remoteListing}
+                    onDownload={downloadRemoteEntry}
+                    onOpen={browseRemotePath}
+                  />
+                ) : (
+                  <>
+                    <section className="control-section" aria-label="Local mode">
+                      <div className="mode-stack">
+                        {(['online', 'local', 'mirror'] as LocalMode[]).map((mode) => {
+                          const Icon = modeIcons[mode]
+                          return (
+                            <button
+                              className={selectedFolder.localMode === mode ? 'mode-option selected' : 'mode-option'}
+                              key={mode}
+                              title={modeCopy[mode]}
+                              aria-label={modeCopy[mode]}
+                              onClick={() => setFolderMode(selectedFolder, mode)}
+                            >
+                              <Icon size={18} />
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </section>
 
-                <section className="control-section" aria-label="Progress">
-                  <div className="progress-line">
-                    <strong>{selectedFolder.progress}%</strong>
-                    <button
-                      className="icon-button compact"
-                      onClick={() => toggleSync(selectedFolder)}
-                      title={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
-                      aria-label={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
-                    >
-                      {selectedFolder.status === 'paused' ? <Play size={17} /> : <Pause size={17} />}
-                    </button>
-                  </div>
-                  <div className="wide-progress">
-                    <span style={{ width: `${selectedFolder.progress}%` }} />
-                  </div>
-                </section>
+                    <section className="control-section" aria-label="Progress">
+                      <div className="progress-line">
+                        <strong>{selectedFolder.progress}%</strong>
+                        <button
+                          className="icon-button compact"
+                          onClick={() => toggleSync(selectedFolder)}
+                          title={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
+                          aria-label={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
+                        >
+                          {selectedFolder.status === 'paused' ? <Play size={17} /> : <Pause size={17} />}
+                        </button>
+                      </div>
+                      <div className="wide-progress">
+                        <span style={{ width: `${selectedFolder.progress}%` }} />
+                      </div>
+                    </section>
+                  </>
+                )}
 
               </>
             ) : (
@@ -490,6 +577,57 @@ function App() {
       </section>
 
     </main>
+  )
+}
+
+function RemoteBrowser({
+  busy,
+  error,
+  listing,
+  onDownload,
+  onOpen,
+}: {
+  busy: boolean
+  error: string
+  listing: RemoteListing | null
+  onDownload: (entry: RemoteEntry) => void
+  onOpen: (relativePath: string) => void
+}) {
+  return (
+    <section className="remote-browser" aria-label="Remote files">
+      <div className="remote-head">
+        <strong>{listing?.path ? listing.path.split('/').slice(-1)[0] : 'Files'}</strong>
+        {listing?.path ? (
+          <button className="icon-button compact" onClick={() => onOpen(listing.parentPath)} title="Up" aria-label="Up">
+            <ArrowUp size={16} />
+          </button>
+        ) : null}
+      </div>
+
+      {error ? <div className="remote-message">{error}</div> : null}
+      {busy ? <div className="remote-message">Loading</div> : null}
+
+      <div className="remote-list">
+        {listing && listing.entries.length === 0 && !busy ? <div className="remote-message">Empty</div> : null}
+        {listing?.entries.map((entry) => (
+          <button
+            className="remote-entry"
+            key={entry.relativePath}
+            onClick={() => (entry.type === 'directory' ? onOpen(entry.relativePath) : onDownload(entry))}
+            title={entry.name}
+          >
+            <span className="remote-entry-icon">
+              {entry.type === 'directory' ? <FolderOpen size={16} /> : <FileText size={16} />}
+            </span>
+            <span>
+              <strong>{entry.name}</strong>
+              <small>{entry.type === 'directory' ? 'Folder' : entry.sizeLabel}</small>
+            </span>
+            {entry.type === 'file' ? <Download size={15} /> : null}
+          </button>
+        ))}
+      </div>
+    </section>
   )
 }
 

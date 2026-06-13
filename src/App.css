@@ -698,6 +698,101 @@ button:disabled {
   background: #eaf7f2;
 }
 
+.remote-browser {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #ece6da;
+}
+
+.remote-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+}
+
+.remote-head strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-list {
+  display: grid;
+  gap: 7px;
+}
+
+.remote-entry {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 7px 8px;
+  border: 1px solid #e0d9cf;
+  border-radius: 8px;
+  color: #252b28;
+  background: #faf7ef;
+  text-align: left;
+  cursor: pointer;
+}
+
+.remote-entry:hover {
+  border-color: #b9ded4;
+  background: #f2f8f3;
+}
+
+.remote-entry-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 7px;
+  color: #2f6fbe;
+  background: #e7f0ff;
+}
+
+.remote-entry strong,
+.remote-entry small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-entry strong {
+  font-size: 13px;
+}
+
+.remote-entry small {
+  margin-top: 2px;
+  color: #68716d;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.remote-entry > svg {
+  color: #0f766e;
+}
+
+.remote-message {
+  display: grid;
+  min-height: 38px;
+  place-items: center;
+  padding: 8px;
+  border: 1px solid #e0d9cf;
+  border-radius: 8px;
+  color: #68716d;
+  background: #faf7ef;
+  font-size: 13px;
+  font-weight: 750;
+}
+
 .device-summary {
   display: grid;
   gap: 7px;

@@ -161,7 +161,7 @@ const localRelayDevice = (state, role = state.pairing.role) => ({
 
 const relayRequest = async (relayUrl, endpoint, body) => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 20000);
 
   try {
     const response = await fetch(`${normalizeRelayUrl(relayUrl)}${endpoint}`, {
@@ -196,10 +196,54 @@ const mapRelayDevice = (device, currentDeviceId) => ({
   address: device.id === currentDeviceId ? 'This PC' : 'Relay',
 });
 
+const formatBytes = (bytes) => {
+  if (!Number.isFinite(bytes)) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+};
+
+const publicCloudFolders = (state) =>
+  state.folders.map((folder) => ({
+    id: folder.id,
+    name: folder.name,
+    path: folder.name,
+    sizeLabel: folder.sizeLabel === 'Scanning' ? 'Cloud' : folder.sizeLabel,
+    itemCount: folder.itemCount,
+    updatedAt: folder.updatedAt,
+    status: folder.status === 'paused' ? 'paused' : 'synced',
+    localMode: 'online',
+    devices: [state.currentDevice.name],
+    progress: 100,
+  }));
+
+const remoteFoldersFromPayload = (payload) =>
+  Array.isArray(payload.folders)
+    ? payload.folders.map((folder) => ({
+        ...folder,
+        path: folder.path || folder.name,
+        sizeLabel: folder.sizeLabel || 'Cloud',
+        itemCount: Number.isFinite(folder.itemCount) ? folder.itemCount : 0,
+        updatedAt: folder.updatedAt || now(),
+        status: folder.status || 'synced',
+        localMode: 'online',
+        devices: folder.devices?.length ? folder.devices : [payload.storageName || 'Storage PC'],
+        progress: Number.isFinite(folder.progress) ? folder.progress : 100,
+      }))
+    : null;
+
 const applyRelaySnapshot = (state, payload, status = 'linked') => {
   const devices = Array.isArray(payload.devices)
     ? payload.devices.map((device) => mapRelayDevice(device, state.currentDevice.id))
     : state.devices;
+  const remoteFolders = state.pairing.role === 'client' ? remoteFoldersFromPayload(payload) : null;
   const hasOtherDevice = devices.some((device) => device.id !== state.currentDevice.id);
   const nextStatus = status === 'waiting' && hasOtherDevice ? 'linked' : status;
   const nextPairing = {
@@ -219,6 +263,7 @@ const applyRelaySnapshot = (state, payload, status = 'linked') => {
     ...state,
     pairing: nextPairing,
     devices,
+    folders: remoteFolders || state.folders,
   });
 };
 
@@ -243,8 +288,13 @@ const refreshPairingState = async () => {
       pairId: state.pairing.pairId,
       token: state.pairing.token,
       device: localRelayDevice(state),
+      folders: state.pairing.role === 'storage' ? publicCloudFolders(state) : undefined,
     });
-    return applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
+    const nextState = applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
+    if (nextState.pairing.role === 'storage') {
+      handlePendingRelayRequests().catch(() => undefined);
+    }
+    return nextState;
   } catch (error) {
     return markRelayError(state, error instanceof Error ? error.message : 'Relay offline');
   }
@@ -255,6 +305,7 @@ const createPairCode = async (relayUrl) => {
   const nextRelayUrl = normalizeRelayUrl(relayUrl);
   const payload = await relayRequest(nextRelayUrl, '/api/drive/pair-codes', {
     device: localRelayDevice(state, 'storage'),
+    folders: publicCloudFolders(state),
   });
   const nextState = addActivity(
     {
@@ -329,6 +380,277 @@ const resetPairing = () => {
       'Ready'
     )
   );
+};
+
+const processingRelayRequests = new Set();
+
+const getPairCredentials = () => {
+  const state = ensureState();
+  if (!state.pairing.pairId || !state.pairing.token) {
+    throw new Error('Not linked');
+  }
+
+  return {
+    state,
+    pairId: state.pairing.pairId,
+    token: state.pairing.token,
+    relayUrl: state.pairing.relayUrl,
+  };
+};
+
+const validateRelativePath = (relativePath = '') => {
+  const normalized = String(relativePath || '').replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+
+  if (path.isAbsolute(normalized) || parts.some((part) => part === '..') || normalized.includes('\0')) {
+    throw new Error('Invalid path');
+  }
+
+  return parts.join(path.sep);
+};
+
+const resolveCloudPath = (state, folderId, relativePath = '') => {
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder) {
+    throw new Error('Folder not found');
+  }
+
+  const root = path.resolve(folder.path);
+  const safeRelativePath = validateRelativePath(relativePath);
+  const target = path.resolve(root, safeRelativePath || '.');
+
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error('Path outside folder');
+  }
+
+  return { folder, root, target };
+};
+
+const relativeCloudPath = (root, target) => path.relative(root, target).split(path.sep).filter(Boolean).join('/');
+
+const listCloudFolder = (state, folderId, relativePath = '') => {
+  const { root, target } = resolveCloudPath(state, folderId, relativePath);
+  const stat = fs.statSync(target);
+
+  if (!stat.isDirectory()) {
+    throw new Error('Not a folder');
+  }
+
+  const entries = fs
+    .readdirSync(target, { withFileTypes: true })
+    .filter((entry) => !entry.name.startsWith('.'))
+    .slice(0, 600)
+    .map((entry) => {
+      const fullPath = path.join(target, entry.name);
+      const entryStat = fs.statSync(fullPath);
+
+      return {
+        name: entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        relativePath: relativeCloudPath(root, fullPath),
+        sizeBytes: entry.isDirectory() ? 0 : entryStat.size,
+        sizeLabel: entry.isDirectory() ? '' : formatBytes(entryStat.size),
+        modifiedAt: entryStat.mtime.toISOString(),
+      };
+    })
+    .sort((left, right) => {
+      if (left.type !== right.type) return left.type === 'directory' ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+
+  const currentPath = relativeCloudPath(root, target);
+  const parentPath = currentPath ? currentPath.split('/').slice(0, -1).join('/') : '';
+
+  return {
+    folderId,
+    path: currentPath,
+    parentPath,
+    entries,
+  };
+};
+
+const createRelayRequest = async (type, folderId, relativePath) => {
+  const { pairId, relayUrl, token } = getPairCredentials();
+  const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
+    pairId,
+    token,
+    type,
+    folderId,
+    relativePath,
+  });
+
+  return payload.requestId;
+};
+
+const waitForRelayRequest = async (requestId, timeoutMs = 120000) => {
+  const startedAt = Date.now();
+  const { pairId, relayUrl, token } = getPairCredentials();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const payload = await relayRequest(relayUrl, '/api/drive/requests/result', {
+      pairId,
+      token,
+      requestId,
+    });
+
+    if (payload.status === 'ready') {
+      return payload.result;
+    }
+
+    if (payload.status === 'error') {
+      throw new Error(payload.error || 'Remote request failed');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+
+  throw new Error('Storage PC did not respond');
+};
+
+const completeRelayRequest = async (requestId, result, error) => {
+  const { pairId, relayUrl, token } = getPairCredentials();
+  return relayRequest(relayUrl, '/api/drive/requests/complete', {
+    pairId,
+    token,
+    requestId,
+    result,
+    error,
+  });
+};
+
+const uploadRelayChunk = async (requestId, index, data) => {
+  const { pairId, relayUrl, token } = getPairCredentials();
+  return relayRequest(relayUrl, '/api/drive/requests/chunk', {
+    pairId,
+    token,
+    requestId,
+    index,
+    data,
+  });
+};
+
+const downloadRelayChunk = async (requestId, index) => {
+  const { pairId, relayUrl, token } = getPairCredentials();
+  return relayRequest(relayUrl, '/api/drive/requests/chunk', {
+    pairId,
+    token,
+    requestId,
+    index,
+  });
+};
+
+const sendFileToRelay = async (requestId, folderId, relativePath) => {
+  const state = ensureState();
+  const { target } = resolveCloudPath(state, folderId, relativePath);
+  const stat = fs.statSync(target);
+
+  if (!stat.isFile()) {
+    throw new Error('Not a file');
+  }
+
+  const chunkSize = 768 * 1024;
+  const file = fs.openSync(target, 'r');
+  const buffer = Buffer.alloc(chunkSize);
+  let index = 0;
+  let offset = 0;
+
+  try {
+    while (offset < stat.size) {
+      const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
+      if (bytesRead <= 0) break;
+      await uploadRelayChunk(requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
+      offset += bytesRead;
+      index += 1;
+    }
+  } finally {
+    fs.closeSync(file);
+  }
+
+  return {
+    fileName: path.basename(target),
+    totalBytes: stat.size,
+    sizeLabel: formatBytes(stat.size),
+    chunkCount: index,
+    modifiedAt: stat.mtime.toISOString(),
+  };
+};
+
+const handlePendingRelayRequests = async () => {
+  const state = ensureState();
+  if (state.pairing.role !== 'storage' || !state.pairing.pairId || !state.pairing.token) {
+    return;
+  }
+
+  const payload = await relayRequest(state.pairing.relayUrl, '/api/drive/requests/poll', {
+    pairId: state.pairing.pairId,
+    token: state.pairing.token,
+  });
+
+  for (const request of payload.requests || []) {
+    if (processingRelayRequests.has(request.id)) {
+      continue;
+    }
+
+    processingRelayRequests.add(request.id);
+    try {
+      const result =
+        request.type === 'download'
+          ? await sendFileToRelay(request.id, request.folderId, request.relativePath)
+          : listCloudFolder(ensureState(), request.folderId, request.relativePath);
+      await completeRelayRequest(request.id, result);
+    } catch (error) {
+      await completeRelayRequest(request.id, null, error instanceof Error ? error.message : 'Request failed');
+    } finally {
+      processingRelayRequests.delete(request.id);
+    }
+  }
+};
+
+const browseRemoteFolder = async (folderId, relativePath = '') => {
+  const state = ensureState();
+  if (state.pairing.role === 'storage') {
+    return listCloudFolder(state, folderId, relativePath);
+  }
+
+  const requestId = await createRelayRequest('list', folderId, relativePath);
+  return waitForRelayRequest(requestId);
+};
+
+const downloadRemoteFile = async (folderId, relativePath = '') => {
+  const state = ensureState();
+
+  if (state.pairing.role === 'storage') {
+    const { target } = resolveCloudPath(state, folderId, relativePath);
+    shell.showItemInFolder(target);
+    return { ok: true, filePath: target };
+  }
+
+  const requestId = await createRelayRequest('download', folderId, relativePath);
+  const result = await waitForRelayRequest(requestId, 15 * 60 * 1000);
+  const saveResult = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save from Nubem Drive',
+    defaultPath: result.fileName,
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { ok: false };
+  }
+
+  const stream = fs.createWriteStream(saveResult.filePath);
+
+  try {
+    for (let index = 0; index < result.chunkCount; index += 1) {
+      const chunk = await downloadRelayChunk(requestId, index);
+      stream.write(Buffer.from(chunk.data, 'base64'));
+    }
+  } finally {
+    await new Promise((resolve, reject) => {
+      stream.end((error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  writeState(addActivity(ensureState(), 'download', result.fileName, result.sizeLabel || 'Downloaded'));
+  return { ok: true, filePath: saveResult.filePath };
 };
 
 const resolveDirectoryPaths = (paths) =>
@@ -526,6 +848,8 @@ app.whenReady().then(() => {
   ipcMain.handle('pairing:join', (_event, relayUrl, code) => joinPairing(relayUrl, code));
   ipcMain.handle('pairing:refresh', () => refreshPairingState());
   ipcMain.handle('pairing:reset', () => resetPairing());
+  ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));
+  ipcMain.handle('remote:download', (_event, folderId, relativePath) => downloadRemoteFile(folderId, relativePath));
 
   heartbeatTimer = setInterval(() => {
     refreshPairingState().catch(() => undefined);

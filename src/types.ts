@@ -41,14 +41,36 @@ export type PairingState = {
   pairCode?: string
   pairCodeExpiresAt?: string
   pairId?: string
+  token?: string
   storageName?: string
   lastSeenAt?: string
   message?: string
 }
 
+export type RemoteEntry = {
+  name: string
+  type: 'directory' | 'file'
+  relativePath: string
+  sizeBytes: number
+  sizeLabel: string
+  modifiedAt: string
+}
+
+export type RemoteListing = {
+  folderId: string
+  path: string
+  parentPath: string
+  entries: RemoteEntry[]
+}
+
+export type RemoteDownloadResult = {
+  ok: boolean
+  filePath?: string
+}
+
 export type ActivityItem = {
   id: string
-  type: 'upload' | 'pin' | 'relay' | 'pause' | 'link'
+  type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download'
   label: string
   detail: string
   at: string
@@ -78,4 +100,6 @@ export type NubemDriveApi = {
   joinPairing: (relayUrl: string, code: string) => Promise<AppState>
   refreshPairing: () => Promise<AppState>
   resetPairing: () => Promise<AppState>
+  browseRemoteFolder: (folderId: string, relativePath: string) => Promise<RemoteListing>
+  downloadRemoteFile: (folderId: string, relativePath: string) => Promise<RemoteDownloadResult>
 }
