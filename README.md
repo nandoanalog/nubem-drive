@@ -12,6 +12,8 @@ Nubem Drive is an Electron + React app for marking local folders as cloud folder
 - Device pairing through `drive.nubem.org`
 - Remote folder browsing from paired devices
 - Relay-backed file downloads
+- Strong one-time pairing codes with relay rate limiting
+- Platform update manifest with background update checks
 - Lightweight Node relay service
 - Download page for installers
 
@@ -31,10 +33,8 @@ npm run build
 
 ## Packaging
 
+Linux packages are built from this machine. Windows installers are built and released from the Windows machine.
+
 ```bash
 npm run dist:linux
-npx electron-builder --win dir --x64
-NSISDIR="$HOME/.cache/electron-builder/nsis/nsis-3.0.4.1" \
-  "$HOME/.cache/electron-builder/nsis/nsis-3.0.4.1/linux/makensis" \
-  build/nsis/manual-installer.nsi
 ```

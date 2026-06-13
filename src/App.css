@@ -272,6 +272,30 @@ button:disabled {
   background: #ffebe6;
 }
 
+.update-button.available,
+.update-button.ready {
+  border-color: #b9cdf0;
+  color: #275ea7;
+  background: #e7f0ff;
+}
+
+.update-button.error {
+  border-color: #efb0a3;
+  color: #a43b2d;
+  background: #ffebe6;
+}
+
+.update-button.downloading svg,
+.update-button.installing svg {
+  animation: soft-spin 1s linear infinite;
+}
+
+@keyframes soft-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .pair-panel {
   display: grid;
   gap: 12px;
@@ -339,12 +363,14 @@ button:disabled {
 
 .pair-code {
   min-height: 38px;
-  padding: 0 12px;
+  max-width: 194px;
+  min-width: 0;
+  padding: 0 10px;
   border: 1px solid #b9ded4;
   border-radius: 8px;
   color: #0f5e57;
   background: #e5f5ef;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 850;
   letter-spacing: 0;
   cursor: pointer;

@@ -47,6 +47,22 @@ export type PairingState = {
   message?: string
 }
 
+export type UpdateStatus = 'idle' | 'current' | 'checking' | 'available' | 'downloading' | 'ready' | 'installing' | 'error'
+
+export type UpdateState = {
+  currentVersion: string
+  platform: string
+  status: UpdateStatus
+  latestVersion?: string
+  checkedAt?: string
+  message?: string
+  downloadUrl?: string
+  fileName?: string
+  sha256?: string
+  downloadedPath?: string
+  progress?: number
+}
+
 export type RemoteEntry = {
   name: string
   type: 'directory' | 'file'
@@ -85,6 +101,7 @@ export type AppState = {
     status: 'online' | 'offline'
   }
   pairing: PairingState
+  updates: UpdateState
   folders: CloudFolder[]
   devices: Device[]
   activity: ActivityItem[]
@@ -103,4 +120,7 @@ export type NubemDriveApi = {
   resetPairing: () => Promise<AppState>
   browseRemoteFolder: (folderId: string, relativePath: string) => Promise<RemoteListing>
   downloadRemoteFile: (folderId: string, relativePath: string) => Promise<RemoteDownloadResult>
+  checkForUpdates: () => Promise<AppState>
+  downloadUpdate: () => Promise<AppState>
+  installUpdate: () => Promise<AppState>
 }

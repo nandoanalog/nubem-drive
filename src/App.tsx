@@ -52,6 +52,11 @@ const demoState: AppState = {
     role: null,
     status: 'idle',
   },
+  updates: {
+    currentVersion: '0.0.0',
+    platform: 'demo',
+    status: 'idle',
+  },
   folders: [
     {
       id: 'documents',
@@ -126,9 +131,8 @@ const statusCopy: Record<FolderStatus, string> = {
 }
 
 function formatPairCode(value?: string) {
-  const clean = (value || '').replace(/\D/g, '').slice(0, 6)
-  if (clean.length <= 3) return clean
-  return `${clean.slice(0, 3)} ${clean.slice(3)}`
+  const clean = (value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
+  return clean.match(/.{1,4}/g)?.join('-') || clean
 }
 
 function pairingLine(state: AppState) {
@@ -161,6 +165,17 @@ const statusIcons: Record<FolderStatus, typeof Cloud> = {
   paused: Pause,
   conflict: AlertTriangle,
   offline: Cloud,
+}
+
+const visibleUpdateStatuses = new Set(['available', 'downloading', 'ready', 'installing', 'error'])
+
+function updateTitle(state: AppState) {
+  const latest = state.updates.latestVersion ? ` ${state.updates.latestVersion}` : ''
+  if (state.updates.status === 'ready') return `Install update${latest}`
+  if (state.updates.status === 'available') return `Download update${latest}`
+  if (state.updates.status === 'downloading') return 'Downloading update'
+  if (state.updates.status === 'installing') return 'Installing update'
+  return state.updates.message || 'Check for updates'
 }
 
 function formatTime(value: string) {
@@ -389,6 +404,24 @@ function App() {
     }
   }
 
+  async function handleUpdateClick() {
+    if (!api) return
+    const status = state.updates.status
+    if (status === 'downloading' || status === 'installing') return
+
+    if (status === 'ready') {
+      setState(await api.installUpdate())
+      return
+    }
+
+    if (status === 'available') {
+      setState(await api.downloadUpdate())
+      return
+    }
+
+    setState(await api.checkForUpdates())
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="Primary">
@@ -439,6 +472,21 @@ function App() {
             >
               <Link2 size={18} />
             </button>
+            {visibleUpdateStatuses.has(state.updates.status) ? (
+              <button
+                className={`icon-button update-button ${state.updates.status}`}
+                disabled={state.updates.status === 'downloading' || state.updates.status === 'installing'}
+                onClick={handleUpdateClick}
+                title={updateTitle(state)}
+                aria-label={updateTitle(state)}
+              >
+                {state.updates.status === 'downloading' || state.updates.status === 'installing' ? (
+                  <RefreshCcw size={18} />
+                ) : (
+                  <Download size={18} />
+                )}
+              </button>
+            ) : null}
             {!isClient ? (
               <button className="primary-button icon-only" onClick={chooseFolders} title="Add folder" aria-label="Add folder">
                 <Plus size={18} />
@@ -717,11 +765,13 @@ function PairPanel({
           <label>
             <span>Code</span>
             <input
-              inputMode="numeric"
-              maxLength={7}
+              autoCapitalize="characters"
+              inputMode="text"
+              maxLength={14}
+              spellCheck={false}
               value={pairCode}
               onChange={(event) => setPairCode(formatPairCode(event.target.value))}
-              placeholder="000 000"
+              placeholder="ABCD-2345-WXYZ"
             />
           </label>
           <button className="primary-button" disabled={busy === 'join'} type="submit">

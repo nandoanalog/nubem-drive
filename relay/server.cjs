@@ -6,19 +6,26 @@ const path = require('node:path');
 const port = Number(process.env.PORT || 8787);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const stateFile = path.join(dataDir, 'state.json');
-const pairCodeTtlMs = 10 * 60 * 1000;
+const pairCodeTtlMs = 5 * 60 * 1000;
 const onlineWindowMs = 35 * 1000;
 const requestTtlMs = 60 * 60 * 1000;
+const joinRateWindowMs = 10 * 60 * 1000;
+const joinRateLimit = 24;
 const defaultBodyLimitBytes = 512 * 1024;
 const chunkBodyLimitBytes = 2 * 1024 * 1024;
+const pairCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const now = () => new Date().toISOString();
 
 const readState = () => {
   try {
-    return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    return {
+      pairs: state.pairs || {},
+      joinAttempts: state.joinAttempts || {},
+    };
   } catch {
-    return { pairs: {} };
+    return { pairs: {}, joinAttempts: {} };
   }
 };
 
@@ -83,6 +90,8 @@ const cleanFolders = (folders) =>
 
 const prunePairs = (state) => {
   const cutoff = Date.now() - requestTtlMs;
+  const attemptCutoff = Date.now() - joinRateWindowMs;
+
   for (const pair of Object.values(state.pairs || {})) {
     for (const [requestId, request] of Object.entries(pair.requests || {})) {
       if (new Date(request.createdAt || 0).getTime() < cutoff) {
@@ -92,19 +101,65 @@ const prunePairs = (state) => {
     }
   }
 
+  for (const [key, attempt] of Object.entries(state.joinAttempts || {})) {
+    if (new Date(attempt.firstAt || 0).getTime() < attemptCutoff) {
+      delete state.joinAttempts[key];
+    }
+  }
+
   return state;
+};
+
+const normalizePairCode = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+
+const formatPairCode = (value) => {
+  const code = normalizePairCode(value);
+  return code.match(/.{1,4}/g)?.join('-') || code;
 };
 
 const makeCode = (state) => {
   for (let index = 0; index < 20; index += 1) {
-    const code = String(crypto.randomInt(100000, 999999));
+    let code = '';
+    for (let charIndex = 0; charIndex < 12; charIndex += 1) {
+      code += pairCodeAlphabet[crypto.randomInt(0, pairCodeAlphabet.length)];
+    }
+
     const exists = Object.values(state.pairs).some(
       (pair) => pair.code === code && new Date(pair.codeExpiresAt).getTime() > Date.now()
     );
     if (!exists) return code;
   }
 
-  return String(crypto.randomInt(100000, 999999));
+  let fallback = '';
+  while (fallback.length < 12) {
+    fallback += pairCodeAlphabet[crypto.randomInt(0, pairCodeAlphabet.length)];
+  }
+  return fallback;
+};
+
+const clientKey = (request) => {
+  const forwardedFor = String(request.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const rawAddress = forwardedFor || request.socket.remoteAddress || 'unknown';
+  return crypto.createHash('sha256').update(rawAddress).digest('hex').slice(0, 24);
+};
+
+const joinAttempt = (state, request) => {
+  state.joinAttempts = state.joinAttempts || {};
+  const key = clientKey(request);
+  const existing = state.joinAttempts[key];
+  const firstAt = existing?.firstAt && Date.now() - new Date(existing.firstAt).getTime() < joinRateWindowMs ? existing.firstAt : now();
+  const count = existing?.firstAt === firstAt ? Number(existing.count || 0) + 1 : 1;
+
+  state.joinAttempts[key] = { firstAt, count };
+  return state.joinAttempts[key];
+};
+
+const joinAllowed = (state, request) => {
+  const attempt = state.joinAttempts?.[clientKey(request)];
+  if (!attempt) return true;
+
+  const inWindow = Date.now() - new Date(attempt.firstAt || 0).getTime() < joinRateWindowMs;
+  return !inWindow || Number(attempt.count || 0) < joinRateLimit;
 };
 
 const publicDevices = (pair) => {
@@ -125,7 +180,7 @@ const publicDevices = (pair) => {
 const pairPayload = (pair, extra = {}) => ({
   ok: true,
   pairId: pair.id,
-  code: pair.code,
+  code: pair.code ? formatPairCode(pair.code) : '',
   expiresAt: pair.codeExpiresAt,
   storageName: pair.storage?.name,
   devices: publicDevices(pair),
@@ -208,19 +263,28 @@ const handlers = {
     return pairPayload(state.pairs[pairId], { token });
   },
 
-  'POST /api/drive/join': async (body) => {
-    const code = String(body.code || '').replace(/\D/g, '');
+  'POST /api/drive/join': async (body, request) => {
+    const code = normalizePairCode(body.code);
     const state = readState();
+
+    if (!joinAllowed(state, request)) {
+      return { status: 429, payload: { ok: false, error: 'Too many attempts. Try later.' } };
+    }
+
     const pair = findPairByCode(state, code);
 
     if (!pair) {
-      return { status: 404, payload: { ok: false, error: 'Code expired' } };
+      joinAttempt(state, request);
+      writeState(prunePairs(state));
+      return { status: 404, payload: { ok: false, error: 'Code expired or wrong' } };
     }
 
     const token = crypto.randomBytes(32).toString('hex');
     const client = cleanDevice(body.device, 'client');
     pair.clients[client.id] = client;
     pair.tokens[token] = client.id;
+    pair.code = '';
+    pair.codeExpiresAt = now();
     writeState(state);
 
     return pairPayload(pair, { token });
@@ -395,7 +459,8 @@ const server = http.createServer(async (request, response) => {
 
   try {
     const result = await handler(
-      await readBody(request, route === 'POST /api/drive/requests/chunk' ? chunkBodyLimitBytes : defaultBodyLimitBytes)
+      await readBody(request, route === 'POST /api/drive/requests/chunk' ? chunkBodyLimitBytes : defaultBodyLimitBytes),
+      request
     );
     if (Number.isInteger(result?.status)) {
       send(response, result.status, result.payload);

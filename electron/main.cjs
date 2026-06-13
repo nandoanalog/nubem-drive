@@ -1,17 +1,43 @@
 const { app, BrowserWindow, Notification, dialog, ipcMain, shell } = require('electron');
+const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 
 const isDev = !app.isPackaged;
 let mainWindow;
 let heartbeatTimer;
+let updateTimer;
+let updateWork;
 
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
 const defaultRelayUrl = 'https://drive.nubem.org';
+const defaultUpdateManifestUrl = `${defaultRelayUrl}/latest.json`;
 
 const now = () => new Date().toISOString();
+
+const updatePlatformKey = () => {
+  if (process.platform === 'win32') return 'win32-x64';
+  if (process.platform === 'linux') return 'linux-x64';
+  return `${process.platform}-${process.arch}`;
+};
+
+const updateDefaults = (updates = {}) => ({
+  currentVersion: app.getVersion(),
+  platform: updatePlatformKey(),
+  status: updates.status || 'idle',
+  latestVersion: updates.latestVersion || '',
+  checkedAt: updates.checkedAt || '',
+  message: updates.message || '',
+  downloadUrl: updates.downloadUrl || '',
+  fileName: updates.fileName || '',
+  sha256: updates.sha256 || '',
+  downloadedPath: updates.downloadedPath || '',
+  progress: Number.isFinite(updates.progress) ? updates.progress : 0,
+});
 
 const makeInitialState = () => {
   const deviceId = crypto.randomUUID();
@@ -38,6 +64,7 @@ const makeInitialState = () => {
     },
     folders: [],
     activity: [],
+    updates: updateDefaults(),
     devices: [
       { id: deviceId, name: os.hostname(), role: 'This PC', status: 'online', address: 'Local' },
     ],
@@ -49,6 +76,8 @@ const normalizeRelayUrl = (value) => {
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   return withProtocol.replace(/\/+$/, '');
 };
+
+const normalizePairCode = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
 
 const relayStatusFromPairing = (pairing) => {
   if (pairing?.status === 'linked') return 'linked';
@@ -99,6 +128,7 @@ const normalizeState = (rawState) => {
     pairing,
     folders: Array.isArray(state.folders) ? state.folders : [],
     activity: Array.isArray(state.activity) ? state.activity : [],
+    updates: updateDefaults(state.updates),
     devices: [localDevice, ...devices],
   };
 };
@@ -253,8 +283,17 @@ const applyRelaySnapshot = (state, payload, status = 'linked') => {
     lastSeenAt: now(),
     storageName: payload.storageName || state.pairing.storageName,
   };
+  const pairCodeExpiresAt = payload.expiresAt || payload.pairCodeExpiresAt;
 
-  if (payload.pairCodeExpiresAt && new Date(payload.pairCodeExpiresAt).getTime() <= Date.now()) {
+  if (payload.code) {
+    nextPairing.pairCode = payload.code;
+    nextPairing.pairCodeExpiresAt = pairCodeExpiresAt;
+  }
+
+  if (
+    payload.code === '' ||
+    (pairCodeExpiresAt && new Date(pairCodeExpiresAt).getTime() <= Date.now())
+  ) {
     delete nextPairing.pairCode;
     delete nextPairing.pairCodeExpiresAt;
   }
@@ -332,9 +371,9 @@ const createPairCode = async (relayUrl) => {
 
 const joinPairing = async (relayUrl, code) => {
   const state = ensureState();
-  const cleanCode = String(code || '').replace(/\D/g, '');
-  if (cleanCode.length !== 6) {
-    throw new Error('Use the 6 digit code');
+  const cleanCode = normalizePairCode(code);
+  if (cleanCode.length !== 12 && !/^\d{6}$/.test(cleanCode)) {
+    throw new Error('Use the code shown');
   }
 
   const nextRelayUrl = normalizeRelayUrl(relayUrl);
@@ -653,6 +692,273 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
   return { ok: true, filePath: saveResult.filePath };
 };
 
+const compareVersions = (left, right) => {
+  const leftParts = String(left || '0').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const rightParts = String(right || '0').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (diff !== 0) return diff;
+  }
+
+  return 0;
+};
+
+const updateMessage = (status, fallback = '') => {
+  const copy = {
+    idle: '',
+    current: 'Up to date',
+    checking: 'Checking',
+    available: 'Update available',
+    downloading: 'Downloading update',
+    ready: 'Ready to install',
+    installing: 'Installing update',
+    error: fallback || 'Update failed',
+  };
+
+  return copy[status] || fallback;
+};
+
+const writeUpdateState = (patch) => {
+  const state = ensureState();
+  return writeState({
+    ...state,
+    updates: updateDefaults({
+      ...state.updates,
+      ...patch,
+    }),
+  });
+};
+
+const absoluteUpdateUrl = (url) => {
+  if (/^https?:\/\//i.test(url)) return url;
+  return new URL(url, defaultRelayUrl).toString();
+};
+
+const readUpdateManifest = async () => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(`${defaultUpdateManifestUrl}?t=${Date.now()}`, {
+      headers: { accept: 'application/json' },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Update check failed ${response.status}`);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const selectUpdateAsset = (manifest) => {
+  const platform = updatePlatformKey();
+  const asset = manifest?.platforms?.[platform];
+  if (!asset) return null;
+  const rawUrl = String(asset.url || '');
+  if (!rawUrl) return null;
+
+  return {
+    platform,
+    version: String(asset.version || manifest.latest || ''),
+    url: absoluteUpdateUrl(rawUrl),
+    fileName: String(asset.fileName || path.basename(new URL(absoluteUpdateUrl(rawUrl)).pathname)),
+    sha256: String(asset.sha256 || ''),
+  };
+};
+
+const checkForUpdates = async ({ autoDownload = false } = {}) => {
+  if (updateWork) return updateWork;
+
+  updateWork = (async () => {
+    writeUpdateState({
+      status: 'checking',
+      checkedAt: now(),
+      message: updateMessage('checking'),
+    });
+
+    try {
+      const manifest = await readUpdateManifest();
+      const asset = selectUpdateAsset(manifest);
+      const currentVersion = app.getVersion();
+
+      if (!asset || !asset.url || compareVersions(asset.version, currentVersion) <= 0) {
+        return writeUpdateState({
+          status: 'current',
+          latestVersion: asset?.version || currentVersion,
+          checkedAt: now(),
+          message: updateMessage('current'),
+          downloadUrl: '',
+          fileName: '',
+          sha256: '',
+          downloadedPath: '',
+          progress: 0,
+        });
+      }
+
+      const nextState = writeUpdateState({
+        status: 'available',
+        latestVersion: asset.version,
+        checkedAt: now(),
+        message: updateMessage('available'),
+        downloadUrl: asset.url,
+        fileName: asset.fileName,
+        sha256: asset.sha256,
+        downloadedPath: '',
+        progress: 0,
+      });
+
+      if (autoDownload) {
+        updateWork = null;
+        return downloadUpdate();
+      }
+
+      return nextState;
+    } catch (error) {
+      return writeUpdateState({
+        status: 'error',
+        checkedAt: now(),
+        message: error instanceof Error ? error.message : updateMessage('error'),
+      });
+    } finally {
+      updateWork = null;
+    }
+  })();
+
+  return updateWork;
+};
+
+const sha256File = (filePath) =>
+  new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+
+const downloadUpdate = async () => {
+  if (updateWork) return updateWork;
+
+  const state = ensureState();
+  if (!state.updates.downloadUrl) {
+    return checkForUpdates({ autoDownload: true });
+  }
+
+  updateWork = (async () => {
+    if (!state.updates.downloadUrl || state.updates.status === 'current') {
+      return ensureState();
+    }
+
+    const fileName = state.updates.fileName || path.basename(new URL(state.updates.downloadUrl).pathname);
+    const targetPath = path.join(app.getPath('userData'), 'updates', fileName);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+
+    writeUpdateState({
+      status: 'downloading',
+      message: updateMessage('downloading'),
+      downloadedPath: '',
+      progress: 0,
+    });
+
+    try {
+      const response = await fetch(state.updates.downloadUrl);
+      if (!response.ok || !response.body) {
+        throw new Error(`Download failed ${response.status}`);
+      }
+
+      await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(targetPath));
+
+      if (state.updates.sha256) {
+        const digest = await sha256File(targetPath);
+        if (digest !== state.updates.sha256) {
+          fs.rmSync(targetPath, { force: true });
+          throw new Error('Update checksum failed');
+        }
+      }
+
+      if (Notification.isSupported()) {
+        new Notification({ title: 'Nubem Drive', body: 'Update ready' }).show();
+      }
+
+      return writeUpdateState({
+        status: 'ready',
+        message: updateMessage('ready'),
+        downloadedPath: targetPath,
+        progress: 100,
+      });
+    } catch (error) {
+      return writeUpdateState({
+        status: 'error',
+        message: error instanceof Error ? error.message : updateMessage('error'),
+        progress: 0,
+      });
+    } finally {
+      updateWork = null;
+    }
+  })();
+
+  return updateWork;
+};
+
+const shellEscape = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+
+const installUpdate = async () => {
+  const state = ensureState();
+  const updatePath = state.updates.downloadedPath;
+
+  if (!updatePath || !fs.existsSync(updatePath)) {
+    return downloadUpdate();
+  }
+
+  writeUpdateState({
+    status: 'installing',
+    message: updateMessage('installing'),
+  });
+
+  if (process.platform === 'win32') {
+    const child = spawn(updatePath, ['/S'], { detached: true, stdio: 'ignore' });
+    child.unref();
+    app.quit();
+    return ensureState();
+  }
+
+  if (process.platform === 'linux' && updatePath.endsWith('.deb')) {
+    if (fs.existsSync('/usr/bin/pkexec')) {
+      const child = spawn('/usr/bin/pkexec', ['/bin/sh', '-c', `/usr/bin/apt install -y ${shellEscape(updatePath)}`], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      app.quit();
+      return ensureState();
+    }
+
+    await shell.openPath(updatePath);
+    return ensureState();
+  }
+
+  await shell.openPath(updatePath);
+  return ensureState();
+};
+
+const scheduleUpdateChecks = () => {
+  if (isDev) return;
+
+  setTimeout(() => {
+    checkForUpdates({ autoDownload: true }).catch(() => undefined);
+  }, 8000);
+
+  updateTimer = setInterval(() => {
+    checkForUpdates({ autoDownload: true }).catch(() => undefined);
+  }, 6 * 60 * 60 * 1000);
+};
+
 const resolveDirectoryPaths = (paths) =>
   paths
     .map((folderPath) => path.resolve(folderPath))
@@ -885,11 +1191,15 @@ app.whenReady().then(() => {
   ipcMain.handle('pairing:reset', () => resetPairing());
   ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));
   ipcMain.handle('remote:download', (_event, folderId, relativePath) => downloadRemoteFile(folderId, relativePath));
+  ipcMain.handle('updates:check', () => checkForUpdates());
+  ipcMain.handle('updates:download', () => downloadUpdate());
+  ipcMain.handle('updates:install', () => installUpdate());
 
   heartbeatTimer = setInterval(() => {
     refreshPairingState().catch(() => undefined);
   }, 5000);
 
+  scheduleUpdateChecks();
   createWindow();
 
   app.on('activate', () => {
@@ -902,6 +1212,10 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
+  }
+
+  if (updateTimer) {
+    clearInterval(updateTimer);
   }
 
   if (process.platform !== 'darwin') {

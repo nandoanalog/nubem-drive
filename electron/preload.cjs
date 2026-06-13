@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld('nubemDrive', {
   resetPairing: () => ipcRenderer.invoke('pairing:reset'),
   browseRemoteFolder: (folderId, relativePath) => ipcRenderer.invoke('remote:browse', folderId, relativePath),
   downloadRemoteFile: (folderId, relativePath) => ipcRenderer.invoke('remote:download', folderId, relativePath),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  downloadUpdate: () => ipcRenderer.invoke('updates:download'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
 });
