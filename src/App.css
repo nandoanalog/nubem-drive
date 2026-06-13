@@ -877,6 +877,31 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.remote-table-head button {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-width: 0;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.remote-table-head button:hover,
+.remote-table-head button.active {
+  color: #151918;
+  background: #ece7db;
+}
+
+.remote-table-head button svg {
+  flex: 0 0 auto;
+}
+
 .remote-entry {
   min-height: 48px;
   border-bottom: 1px solid #eee8dd;

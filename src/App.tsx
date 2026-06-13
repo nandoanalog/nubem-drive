@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowUp,
   CheckCircle2,
   ChevronRight,
@@ -29,6 +30,8 @@ import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing } 
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'code' | 'join' | 'reset' | null
+type RemoteSortKey = 'name' | 'modified' | 'size'
+type SortDirection = 'asc' | 'desc'
 
 const defaultRelayHost = 'drive.nubem.org'
 
@@ -592,11 +595,40 @@ function RemoteBrowser({
   onDownload: (entry: RemoteEntry) => void
   onOpen: (relativePath: string) => void
 }) {
+  const [sortKey, setSortKey] = useState<RemoteSortKey>('name')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const crumbs = pathCrumbs(listing?.path || '')
   const entries = [...(listing?.entries || [])].sort((left, right) => {
     if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
-    return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+
+    const direction = sortDirection === 'asc' ? 1 : -1
+    const nameResult = left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+    if (sortKey === 'modified') {
+      const leftTime = new Date(left.modifiedAt || 0).getTime()
+      const rightTime = new Date(right.modifiedAt || 0).getTime()
+      const result = (leftTime - rightTime) * direction
+      if (result !== 0) return result
+      return nameResult
+    }
+
+    if (sortKey === 'size') {
+      const result = (left.sizeBytes - right.sizeBytes) * direction
+      if (result !== 0) return result
+      return nameResult
+    }
+
+    return nameResult * direction
   })
+
+  function changeSort(nextKey: RemoteSortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((currentDirection) => (currentDirection === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+
+    setSortKey(nextKey)
+    setSortDirection(nextKey === 'name' ? 'asc' : 'desc')
+  }
 
   return (
     <section className="remote-browser" aria-label="Remote files">
@@ -632,11 +664,17 @@ function RemoteBrowser({
       {busy ? <div className="remote-message">Loading</div> : null}
 
       <div className="remote-table">
-        <div className="remote-table-head" aria-hidden="true">
-          <span>Name</span>
+        <div className="remote-table-head">
+          <button className={sortKey === 'name' ? 'active' : ''} onClick={() => changeSort('name')}>
+            Name {sortKey === 'name' ? sortIcon(sortDirection) : null}
+          </button>
           <span>Kind</span>
-          <span>Size</span>
-          <span>Modified</span>
+          <button className={sortKey === 'size' ? 'active' : ''} onClick={() => changeSort('size')}>
+            Size {sortKey === 'size' ? sortIcon(sortDirection) : null}
+          </button>
+          <button className={sortKey === 'modified' ? 'active' : ''} onClick={() => changeSort('modified')}>
+            Modified {sortKey === 'modified' ? sortIcon(sortDirection) : null}
+          </button>
           <span />
         </div>
 
@@ -673,6 +711,10 @@ function RemoteBrowser({
       </div>
     </section>
   )
+}
+
+function sortIcon(direction: SortDirection) {
+  return direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />
 }
 
 function pathCrumbs(relativePath: string) {
