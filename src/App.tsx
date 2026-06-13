@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowUp,
   CheckCircle2,
+  ChevronRight,
   Cloud,
   Download,
   ExternalLink,
@@ -455,42 +456,54 @@ function App() {
         ) : null}
 
         <div className="content-grid">
-          <section className="folder-browser" aria-label="Cloud folders">
-            <div className="browser-toolbar">
-              <div className="segmented-control">
-                {filters.map((item) => {
-                  const Icon = filterIcons[item.key]
-                  return (
-                    <button
-                      aria-label={item.label}
-                      className={filter === item.key ? 'selected' : ''}
-                      key={item.key}
-                      onClick={() => setFilter(item.key)}
-                      title={item.label}
-                    >
-                      <Icon size={16} />
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
+          <section className={`folder-browser ${selectedIsClientVault ? 'remote-panel' : ''}`} aria-label={selectedIsClientVault ? 'Vault files' : 'Cloud folders'}>
+            {selectedIsClientVault ? (
+              <RemoteBrowser
+                busy={remoteBusy}
+                error={remoteError}
+                listing={remoteListing}
+                onDownload={downloadRemoteEntry}
+                onOpen={browseRemotePath}
+              />
+            ) : (
+              <>
+                <div className="browser-toolbar">
+                  <div className="segmented-control">
+                    {filters.map((item) => {
+                      const Icon = filterIcons[item.key]
+                      return (
+                        <button
+                          aria-label={item.label}
+                          className={filter === item.key ? 'selected' : ''}
+                          key={item.key}
+                          onClick={() => setFilter(item.key)}
+                          title={item.label}
+                        >
+                          <Icon size={16} />
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
 
-            <div className="folder-list">
-              {isLoading ? (
-                <div className="empty-state">Loading</div>
-              ) : folders.length === 0 ? (
-                <div className="empty-state">No folders</div>
-              ) : (
-                folders.map((folder) => (
-                  <FolderRow
-                    folder={folder}
-                    isSelected={selectedFolder?.id === folder.id}
-                    key={folder.id}
-                    onSelect={() => setSelectedId(folder.id)}
-                  />
-                ))
-              )}
-            </div>
+                <div className="folder-list">
+                  {isLoading ? (
+                    <div className="empty-state">Loading</div>
+                  ) : folders.length === 0 ? (
+                    <div className="empty-state">No folders</div>
+                  ) : (
+                    folders.map((folder) => (
+                      <FolderRow
+                        folder={folder}
+                        isSelected={selectedFolder?.id === folder.id}
+                        key={folder.id}
+                        onSelect={() => setSelectedId(folder.id)}
+                      />
+                    ))
+                  )}
+                </div>
+              </>
+            )}
           </section>
 
           <aside className="inspector" aria-label="Folder details">
@@ -541,19 +554,10 @@ function App() {
                 {selectedFolder.code && !selectedIsClientVault ? <button className="vault-code" onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}>{selectedFolder.code}</button> : null}
 
                 {selectedIsClientVault ? (
-                  <>
-                    <button className="primary-button full-width" onClick={chooseFolders}>
-                      <UploadCloud size={17} />
-                      Cloud folder
-                    </button>
-                  <RemoteBrowser
-                    busy={remoteBusy}
-                    error={remoteError}
-                    listing={remoteListing}
-                    onDownload={downloadRemoteEntry}
-                    onOpen={browseRemotePath}
-                  />
-                  </>
+                  <button className="primary-button full-width" onClick={chooseFolders}>
+                    <UploadCloud size={17} />
+                    Cloud folder
+                  </button>
                 ) : (
                   <section className="control-section" aria-label="Vault">
                     <button className="primary-button full-width" onClick={createPairCode}>
@@ -588,10 +592,19 @@ function RemoteBrowser({
   onDownload: (entry: RemoteEntry) => void
   onOpen: (relativePath: string) => void
 }) {
+  const crumbs = pathCrumbs(listing?.path || '')
+  const entries = [...(listing?.entries || [])].sort((left, right) => {
+    if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+    return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+  })
+
   return (
     <section className="remote-browser" aria-label="Remote files">
       <div className="remote-head">
-        <strong>{listing?.path ? listing.path.split('/').slice(-1)[0] : 'Files'}</strong>
+        <div className="remote-title">
+          <strong>{listing?.path ? listing.path.split('/').slice(-1)[0] : 'Files'}</strong>
+          <span>{entries.length.toLocaleString()} items</span>
+        </div>
         {listing?.path ? (
           <button className="icon-button compact" onClick={() => onOpen(listing.parentPath)} title="Up" aria-label="Up">
             <ArrowUp size={16} />
@@ -599,31 +612,78 @@ function RemoteBrowser({
         ) : null}
       </div>
 
+      <nav className="remote-crumbs" aria-label="Path">
+        {crumbs.map((crumb, index) => (
+          <span key={crumb.path || 'root'}>
+            {index > 0 ? <ChevronRight size={14} /> : null}
+            <button
+              className={index === crumbs.length - 1 ? 'current' : ''}
+              disabled={index === crumbs.length - 1 || busy}
+              onClick={() => onOpen(crumb.path)}
+              title={crumb.label}
+            >
+              {crumb.label}
+            </button>
+          </span>
+        ))}
+      </nav>
+
       {error ? <div className="remote-message">{error}</div> : null}
       {busy ? <div className="remote-message">Loading</div> : null}
 
-      <div className="remote-list">
-        {listing && listing.entries.length === 0 && !busy ? <div className="remote-message">Empty</div> : null}
-        {listing?.entries.map((entry) => (
-          <button
+      <div className="remote-table">
+        <div className="remote-table-head" aria-hidden="true">
+          <span>Name</span>
+          <span>Kind</span>
+          <span>Size</span>
+          <span>Modified</span>
+          <span />
+        </div>
+
+        {listing && entries.length === 0 && !busy ? <div className="remote-message">Empty</div> : null}
+        {entries.map((entry) => (
+          <div
             className="remote-entry"
             key={entry.relativePath}
-            onClick={() => (entry.type === 'directory' ? onOpen(entry.relativePath) : onDownload(entry))}
             title={entry.name}
           >
-            <span className="remote-entry-icon">
-              {entry.type === 'directory' ? <FolderOpen size={16} /> : <FileText size={16} />}
-            </span>
-            <span>
+            <button
+              className="remote-name"
+              disabled={busy}
+              onClick={() => (entry.type === 'directory' ? onOpen(entry.relativePath) : onDownload(entry))}
+              title={entry.name}
+            >
+              <span className="remote-entry-icon">
+                {entry.type === 'directory' ? <FolderOpen size={17} /> : <FileText size={17} />}
+              </span>
               <strong>{entry.name}</strong>
-              <small>{entry.type === 'directory' ? 'Folder' : entry.sizeLabel}</small>
+            </button>
+            <span className="remote-kind">{entry.type === 'directory' ? 'Folder' : 'File'}</span>
+            <span className="remote-size">{entry.type === 'directory' ? '-' : entry.sizeLabel}</span>
+            <span className="remote-modified">{formatTime(entry.modifiedAt)}</span>
+            <span className="remote-actions">
+              {entry.type === 'file' ? (
+                <button disabled={busy} onClick={() => onDownload(entry)} title="Download" aria-label={`Download ${entry.name}`}>
+                  <Download size={16} />
+                </button>
+              ) : null}
             </span>
-            {entry.type === 'file' ? <Download size={15} /> : null}
-          </button>
+          </div>
         ))}
       </div>
     </section>
   )
+}
+
+function pathCrumbs(relativePath: string) {
+  const parts = relativePath.split('/').filter(Boolean)
+  return [
+    { label: 'Vault', path: '' },
+    ...parts.map((part, index) => ({
+      label: part,
+      path: parts.slice(0, index + 1).join('/'),
+    })),
+  ]
 }
 
 function PairPanel({
