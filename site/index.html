@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nubem Drive</title>
+    <style>
+      :root {
+        color: #181c1a;
+        background: #f4f1ea;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+      }
+
+      main {
+        width: min(720px, 100%);
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 28px;
+      }
+
+      .mark {
+        display: grid;
+        width: 44px;
+        height: 44px;
+        place-items: center;
+        border-radius: 8px;
+        color: white;
+        background: #0f766e;
+        font-weight: 850;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.05;
+      }
+
+      p {
+        margin: 6px 0 0;
+        color: #68716d;
+      }
+
+      .downloads {
+        display: grid;
+        gap: 12px;
+      }
+
+      a {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        min-height: 76px;
+        padding: 18px;
+        border: 1px solid #ddd6ca;
+        border-radius: 8px;
+        color: inherit;
+        background: #fffdf8;
+        text-decoration: none;
+      }
+
+      a:hover {
+        border-color: #9ed4c6;
+        background: #f2f8f3;
+      }
+
+      strong,
+      span {
+        display: block;
+      }
+
+      small {
+        color: #6a716e;
+      }
+
+      .badge {
+        flex: 0 0 auto;
+        border-radius: 999px;
+        padding: 7px 10px;
+        color: #0e5f59;
+        background: #e5f5ef;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .note {
+        margin-top: 16px;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="mark">N</div>
+        <div>
+          <h1>Nubem Drive</h1>
+          <p>Folder cloud installers</p>
+        </div>
+      </header>
+
+      <section class="downloads" aria-label="Downloads">
+        <a href="/downloads/Nubem-Drive-0.0.2-amd64.deb">
+          <span>
+            <strong>Linux Mint / Ubuntu</strong>
+            <small>.deb installer, 71 MB</small>
+          </span>
+          <span class="badge">Download</span>
+        </a>
+
+        <a href="/downloads/Nubem-Drive-Setup-0.0.2-x64.exe">
+          <span>
+            <strong>Windows</strong>
+            <small>.exe installer, 106 MB</small>
+          </span>
+          <span class="badge">Download</span>
+        </a>
+      </section>
+
+      <p class="note">Windows build is unsigned, so SmartScreen may warn on first install.</p>
+    </main>
+  </body>
+</html>

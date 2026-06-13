@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+mkdir -p /usr/share/nemo/actions
+
+cat > /usr/bin/nubem-drive-cloud-folder <<'EOF'
+#!/bin/sh
+exec "/opt/Nubem Drive/nubem-drive" --cloud-folder "$@"
+EOF
+
+chmod 755 /usr/bin/nubem-drive-cloud-folder
+
+cat > /usr/share/nemo/actions/nubem-cloud-folder.nemo_action <<'EOF'
+[Nemo Action]
+Active=true
+Name=Cloud
+Comment=Add folder to Nubem Drive
+Exec=nubem-drive-cloud-folder %F
+Icon-Name=folder-remote-symbolic
+Selection=notnone
+Extensions=dir;
+EOF
+
+if command -v nemo >/dev/null 2>&1; then
+  nemo --quit >/dev/null 2>&1 || true
+fi

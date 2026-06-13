@@ -1,0 +1,51 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name drive.nubem.org nubem-drive.164.132.40.140.nip.io;
+    return 301 https://drive.nubem.org$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name drive.nubem.org;
+
+    root /opt/nubem-drive-downloads/site;
+    index index.html;
+
+    location /api/drive/ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /downloads/ {
+        alias /opt/nubem-drive-downloads/downloads/;
+        add_header Content-Disposition "attachment";
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    ssl_certificate /etc/letsencrypt/live/drive.nubem.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/drive.nubem.org/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name nubem-drive.164.132.40.140.nip.io;
+
+    return 301 https://drive.nubem.org$request_uri;
+
+    ssl_certificate /etc/letsencrypt/live/nubem-drive.164.132.40.140.nip.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nubem-drive.164.132.40.140.nip.io/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}

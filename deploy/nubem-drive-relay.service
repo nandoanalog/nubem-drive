@@ -1,0 +1,19 @@
+[Unit]
+Description=Nubem Drive relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/nubem-drive-relay
+Environment=PORT=8787
+Environment=DATA_DIR=/opt/nubem-drive-relay/data
+ExecStart=/usr/bin/node /opt/nubem-drive-relay/server.cjs
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

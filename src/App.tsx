@@ -1,0 +1,649 @@
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Cloud,
+  Download,
+  ExternalLink,
+  Folder,
+  HardDrive,
+  KeyRound,
+  Laptop,
+  Link2,
+  MoreHorizontal,
+  Pause,
+  Play,
+  Plus,
+  RefreshCcw,
+  Search,
+  Server,
+  UploadCloud,
+  Wifi,
+  X,
+} from 'lucide-react'
+import './App.css'
+import type { AppState, CloudFolder, FolderStatus, LocalMode } from './types'
+
+type FilterKey = 'all' | 'local' | 'online' | 'syncing'
+type PairBusy = 'code' | 'join' | 'reset' | null
+
+const defaultRelayHost = 'drive.nubem.org'
+
+const demoState: AppState = {
+  storageNode: {
+    name: 'Main storage',
+    path: '/mnt/nubem-storage',
+    capacityBytes: 2_000_000_000_000,
+    usedBytes: 612_000_000_000,
+    status: 'online',
+    relayStatus: 'ready',
+  },
+  currentDevice: {
+    id: 'demo-device',
+    name: 'This PC',
+    platform: 'linux',
+    status: 'online',
+  },
+  pairing: {
+    relayUrl: `https://${defaultRelayHost}`,
+    role: null,
+    status: 'idle',
+  },
+  folders: [
+    {
+      id: 'documents',
+      name: 'Documents',
+      path: '/home/nando/Documents',
+      sizeLabel: '38.4 GB',
+      itemCount: 18240,
+      updatedAt: new Date().toISOString(),
+      status: 'synced',
+      localMode: 'local',
+      devices: ['This PC', 'Laptop'],
+      progress: 100,
+    },
+    {
+      id: 'photos',
+      name: 'Photos archive',
+      path: '/home/nando/Pictures',
+      sizeLabel: '426 GB',
+      itemCount: 74512,
+      updatedAt: new Date().toISOString(),
+      status: 'syncing',
+      localMode: 'online',
+      devices: ['This PC'],
+      progress: 64,
+    },
+    {
+      id: 'exports',
+      name: 'Work exports',
+      path: '/home/nando/Exports',
+      sizeLabel: '91.7 GB',
+      itemCount: 6310,
+      updatedAt: new Date().toISOString(),
+      status: 'paused',
+      localMode: 'mirror',
+      devices: ['This PC', 'Studio'],
+      progress: 100,
+    },
+  ],
+  devices: [
+    { id: 'main', name: 'This PC', role: 'Storage node', status: 'online', address: 'LAN' },
+    { id: 'laptop', name: 'Laptop', role: 'Client', status: 'online', address: 'Relay' },
+    { id: 'studio', name: 'Studio', role: 'Client', status: 'sleeping', address: 'Last seen 2h ago' },
+  ],
+  activity: [
+    { id: 'a1', type: 'upload', label: 'Photos archive', detail: '12.8 GB remaining', at: new Date().toISOString() },
+    { id: 'a2', type: 'pin', label: 'Documents', detail: 'Kept on Laptop', at: new Date().toISOString() },
+    { id: 'a3', type: 'relay', label: 'VPS relay', detail: '164.132.40.140 ready', at: new Date().toISOString() },
+  ],
+}
+
+const filters: Array<{ key: FilterKey; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'local', label: 'Local' },
+  { key: 'online', label: 'Online' },
+  { key: 'syncing', label: 'Syncing' },
+]
+
+const filterIcons: Record<FilterKey, typeof Cloud> = {
+  all: Folder,
+  local: Download,
+  online: Cloud,
+  syncing: RefreshCcw,
+}
+
+const statusCopy: Record<FolderStatus, string> = {
+  synced: 'Synced',
+  syncing: 'Syncing',
+  queued: 'Queued',
+  paused: 'Paused',
+  conflict: 'Conflict',
+  offline: 'Offline',
+}
+
+function formatPairCode(value?: string) {
+  const clean = (value || '').replace(/\D/g, '').slice(0, 6)
+  if (clean.length <= 3) return clean
+  return `${clean.slice(0, 3)} ${clean.slice(3)}`
+}
+
+function pairingLine(state: AppState) {
+  if (state.pairing.status === 'linked') {
+    const otherDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
+    return otherDevices.length > 0 ? `${otherDevices.length} linked` : 'Linked'
+  }
+
+  if (state.pairing.status === 'waiting') return 'Waiting'
+  if (state.pairing.status === 'error') return 'Check host'
+  return 'Not linked'
+}
+
+const modeCopy: Record<LocalMode, string> = {
+  online: 'Online only',
+  local: 'Keep local',
+  mirror: 'Mirror',
+}
+
+const modeIcons: Record<LocalMode, typeof Cloud> = {
+  online: Cloud,
+  local: Download,
+  mirror: HardDrive,
+}
+
+const statusIcons: Record<FolderStatus, typeof Cloud> = {
+  synced: CheckCircle2,
+  syncing: RefreshCcw,
+  queued: UploadCloud,
+  paused: Pause,
+  conflict: AlertTriangle,
+  offline: Cloud,
+}
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+function matchesFilter(folder: CloudFolder, filter: FilterKey) {
+  if (filter === 'local') return folder.localMode === 'local' || folder.localMode === 'mirror'
+  if (filter === 'online') return folder.localMode === 'online'
+  if (filter === 'syncing') return folder.status === 'syncing' || folder.status === 'queued'
+  return true
+}
+
+function App() {
+  const [state, setState] = useState<AppState>(demoState)
+  const [selectedId, setSelectedId] = useState(demoState.folders[0]?.id)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<FilterKey>('all')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isPairPanelOpen, setIsPairPanelOpen] = useState(false)
+  const [relayHost, setRelayHost] = useState(defaultRelayHost)
+  const [pairCode, setPairCode] = useState('')
+  const [pairBusy, setPairBusy] = useState<PairBusy>(null)
+  const [pairError, setPairError] = useState('')
+
+  const api = window.nubemDrive
+
+  useEffect(() => {
+    let active = true
+
+    async function loadState() {
+      try {
+        const nextState = api ? await api.getState() : demoState
+        if (!active) return
+
+        setState(nextState)
+        setRelayHost((currentHost) => currentHost || nextState.pairing.relayUrl || defaultRelayHost)
+        setSelectedId((currentId) => {
+          if (currentId && nextState.folders.some((folder) => folder.id === currentId)) {
+            return currentId
+          }
+
+          return nextState.folders[0]?.id
+        })
+      } finally {
+        if (active) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    loadState()
+    const interval = window.setInterval(loadState, 2000)
+
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [api])
+
+  const storagePercent = Math.round((state.storageNode.usedBytes / state.storageNode.capacityBytes) * 100)
+
+  const folders = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
+
+    return state.folders.filter((folder) => {
+      const queryMatch =
+        normalizedQuery.length === 0 ||
+        folder.name.toLowerCase().includes(normalizedQuery) ||
+        folder.path.toLowerCase().includes(normalizedQuery)
+
+      return queryMatch && matchesFilter(folder, filter)
+    })
+  }, [filter, query, state.folders])
+
+  const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
+  async function chooseFolders() {
+    if (!api) return
+    const nextState = await api.chooseFolders()
+    setState(nextState)
+    setSelectedId(nextState.folders[0]?.id)
+  }
+
+  async function setFolderMode(folder: CloudFolder, mode: LocalMode) {
+    if (!api) return
+    const nextState = await api.setFolderMode(folder.id, mode)
+    setState(nextState)
+  }
+
+  async function toggleSync(folder: CloudFolder) {
+    if (!api) return
+    const nextState = await api.toggleFolderSync(folder.id)
+    setState(nextState)
+  }
+
+  function revealFolder(folder: CloudFolder) {
+    api?.revealFolder(folder.path)
+  }
+
+  async function createPairCode() {
+    if (!api) return
+    setPairBusy('code')
+    setPairError('')
+    try {
+      const nextState = await api.createPairCode(relayHost)
+      setState(nextState)
+    } catch (error) {
+      setPairError(error instanceof Error ? error.message : 'Could not create code')
+    } finally {
+      setPairBusy(null)
+    }
+  }
+
+  async function joinPairing(event: FormEvent) {
+    event.preventDefault()
+    if (!api) return
+    setPairBusy('join')
+    setPairError('')
+    try {
+      const nextState = await api.joinPairing(relayHost, pairCode)
+      setState(nextState)
+      setPairCode('')
+    } catch (error) {
+      setPairError(error instanceof Error ? error.message : 'Could not join')
+    } finally {
+      setPairBusy(null)
+    }
+  }
+
+  async function resetPairing() {
+    if (!api) return
+    setPairBusy('reset')
+    setPairError('')
+    try {
+      setState(await api.resetPairing())
+    } catch (error) {
+      setPairError(error instanceof Error ? error.message : 'Could not reset')
+    } finally {
+      setPairBusy(null)
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <aside className="sidebar" aria-label="Primary">
+        <div className="brand-lockup" title="Nubem Drive">
+          <div className="brand-mark">
+            <Cloud size={22} strokeWidth={2.4} />
+          </div>
+        </div>
+
+        <section className="storage-panel" aria-label="Storage">
+          <div className="storage-heading" title={state.storageNode.name}>
+            <Server size={18} />
+            <strong>{storagePercent}%</strong>
+          </div>
+          <div className="meter">
+            <span style={{ width: `${storagePercent}%` }} />
+          </div>
+          <div className="relay-pill" title="Relay ready" aria-label="Relay ready">
+            <Wifi size={15} />
+          </div>
+        </section>
+
+        <section className="device-summary" aria-label="Devices">
+          {state.devices.map((device) => (
+            <div className="device-row compact" key={device.id} title={`${device.name} - ${device.address}`}>
+              <Laptop size={16} />
+              <span className={`device-dot ${device.status}`} />
+            </div>
+          ))}
+        </section>
+      </aside>
+
+      <section className="workspace">
+        <header className="topbar">
+          <div>
+            <h1>Folders</h1>
+          </div>
+          <div className="topbar-actions">
+            <label className="search-box">
+              <Search size={18} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
+            </label>
+            <button
+              className={`icon-button link-button ${state.pairing.status}`}
+              onClick={() => setIsPairPanelOpen((isOpen) => !isOpen)}
+              title="Link devices"
+              aria-label="Link devices"
+            >
+              <Link2 size={18} />
+            </button>
+            <button className="primary-button icon-only" onClick={chooseFolders} title="Add folder" aria-label="Add folder">
+              <Plus size={18} />
+            </button>
+          </div>
+        </header>
+
+        {isPairPanelOpen ? (
+          <PairPanel
+            busy={pairBusy}
+            error={pairError}
+            onClose={() => setIsPairPanelOpen(false)}
+            onCreateCode={createPairCode}
+            onJoin={joinPairing}
+            onReset={resetPairing}
+            pairCode={pairCode}
+            relayHost={relayHost}
+            setPairCode={setPairCode}
+            setRelayHost={setRelayHost}
+            state={state}
+          />
+        ) : null}
+
+        <div className="content-grid">
+          <section className="folder-browser" aria-label="Cloud folders">
+            <div className="browser-toolbar">
+              <div className="segmented-control">
+                {filters.map((item) => {
+                  const Icon = filterIcons[item.key]
+                  return (
+                    <button
+                      aria-label={item.label}
+                      className={filter === item.key ? 'selected' : ''}
+                      key={item.key}
+                      onClick={() => setFilter(item.key)}
+                      title={item.label}
+                    >
+                      <Icon size={16} />
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="folder-list">
+              {isLoading ? (
+                <div className="empty-state">Loading</div>
+              ) : folders.length === 0 ? (
+                <div className="empty-state">No folders</div>
+              ) : (
+                folders.map((folder) => (
+                  <FolderRow
+                    folder={folder}
+                    isSelected={selectedFolder?.id === folder.id}
+                    key={folder.id}
+                    onSelect={() => setSelectedId(folder.id)}
+                    onToggle={() => toggleSync(folder)}
+                  />
+                ))
+              )}
+            </div>
+          </section>
+
+          <aside className="inspector" aria-label="Folder details">
+            {selectedFolder ? (
+              <>
+                <div className="inspector-head">
+                  <div className="folder-glyph">
+                    <Folder size={24} />
+                  </div>
+                  <div>
+                    <h2>{selectedFolder.name}</h2>
+                  </div>
+                  <button className="icon-button compact" title="More" aria-label="More">
+                    <MoreHorizontal size={18} />
+                  </button>
+                </div>
+
+                <div className="quick-actions">
+                  <button onClick={() => revealFolder(selectedFolder)} title={selectedFolder.path} aria-label="Reveal folder">
+                    <ExternalLink size={15} />
+                  </button>
+                </div>
+
+                <div className="meta-strip">
+                  <span title="Size">{selectedFolder.sizeLabel}</span>
+                  <span title="Items">{selectedFolder.itemCount.toLocaleString()}</span>
+                  <span title="Updated">{formatTime(selectedFolder.updatedAt)}</span>
+                  <span title="Devices">{selectedFolder.devices.length}</span>
+                </div>
+
+                <section className="control-section" aria-label="Local mode">
+                  <div className="mode-stack">
+                    {(['online', 'local', 'mirror'] as LocalMode[]).map((mode) => {
+                      const Icon = modeIcons[mode]
+                      return (
+                        <button
+                          className={selectedFolder.localMode === mode ? 'mode-option selected' : 'mode-option'}
+                          key={mode}
+                          title={modeCopy[mode]}
+                          aria-label={modeCopy[mode]}
+                          onClick={() => setFolderMode(selectedFolder, mode)}
+                        >
+                          <Icon size={18} />
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+
+                <section className="control-section" aria-label="Progress">
+                  <div className="progress-line">
+                    <strong>{selectedFolder.progress}%</strong>
+                    <button
+                      className="icon-button compact"
+                      onClick={() => toggleSync(selectedFolder)}
+                      title={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
+                      aria-label={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
+                    >
+                      {selectedFolder.status === 'paused' ? <Play size={17} /> : <Pause size={17} />}
+                    </button>
+                  </div>
+                  <div className="wide-progress">
+                    <span style={{ width: `${selectedFolder.progress}%` }} />
+                  </div>
+                </section>
+
+              </>
+            ) : (
+              <div className="empty-state">Select a folder</div>
+            )}
+          </aside>
+        </div>
+      </section>
+
+    </main>
+  )
+}
+
+function PairPanel({
+  busy,
+  error,
+  onClose,
+  onCreateCode,
+  onJoin,
+  onReset,
+  pairCode,
+  relayHost,
+  setPairCode,
+  setRelayHost,
+  state,
+}: {
+  busy: PairBusy
+  error: string
+  onClose: () => void
+  onCreateCode: () => void
+  onJoin: (event: FormEvent) => void
+  onReset: () => void
+  pairCode: string
+  relayHost: string
+  setPairCode: (value: string) => void
+  setRelayHost: (value: string) => void
+  state: AppState
+}) {
+  const pairingMessage = error || state.pairing.message
+  const linkedDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
+
+  return (
+    <section className="pair-panel" aria-label="Link devices">
+      <div className="pair-panel-head">
+        <div>
+          <strong>Link</strong>
+          <span>{pairingLine(state)}</span>
+        </div>
+        <button className="icon-button compact" onClick={onClose} title="Close" aria-label="Close">
+          <X size={17} />
+        </button>
+      </div>
+
+      <div className="pair-grid">
+        <div className="pair-card">
+          <HardDrive size={19} />
+          <strong>This PC</strong>
+          <button className="primary-button" disabled={busy === 'code'} onClick={onCreateCode}>
+            {busy === 'code' ? '...' : 'Show code'}
+          </button>
+          {state.pairing.pairCode ? (
+            <button
+              className="pair-code"
+              onClick={() => navigator.clipboard?.writeText(state.pairing.pairCode || '')}
+              title="Copy code"
+            >
+              {formatPairCode(state.pairing.pairCode)}
+            </button>
+          ) : null}
+        </div>
+
+        <form className="pair-card pair-form" onSubmit={onJoin}>
+          <Laptop size={19} />
+          <strong>Windows</strong>
+          <label>
+            <span>Host</span>
+            <input value={relayHost} onChange={(event) => setRelayHost(event.target.value)} placeholder={defaultRelayHost} />
+          </label>
+          <label>
+            <span>Code</span>
+            <input
+              inputMode="numeric"
+              maxLength={7}
+              value={pairCode}
+              onChange={(event) => setPairCode(formatPairCode(event.target.value))}
+              placeholder="000 000"
+            />
+          </label>
+          <button className="primary-button" disabled={busy === 'join'} type="submit">
+            {busy === 'join' ? '...' : 'Join'}
+          </button>
+        </form>
+      </div>
+
+      <div className="pair-footer">
+        <div className="linked-devices">
+          {linkedDevices.length === 0 ? (
+            <span className="quiet-chip">
+              <KeyRound size={14} />
+              {state.pairing.status === 'waiting' ? 'Code ready' : 'No devices'}
+            </span>
+          ) : (
+            linkedDevices.map((device) => (
+              <span className="quiet-chip" key={device.id} title={device.address}>
+                <Laptop size={14} />
+                {device.name}
+              </span>
+            ))
+          )}
+        </div>
+        <button className="text-button" disabled={busy === 'reset'} onClick={onReset}>
+          Reset
+        </button>
+      </div>
+
+      {pairingMessage ? <div className="pair-message">{pairingMessage}</div> : null}
+    </section>
+  )
+}
+
+function FolderRow({
+  folder,
+  isSelected,
+  onSelect,
+  onToggle,
+}: {
+  folder: CloudFolder
+  isSelected: boolean
+  onSelect: () => void
+  onToggle: () => void
+}) {
+  const StatusIcon = statusIcons[folder.status]
+  const ModeIcon = modeIcons[folder.localMode]
+
+  return (
+    <button className={isSelected ? 'folder-row selected' : 'folder-row'} onClick={onSelect}>
+      <span className="folder-name">
+        <span className="small-folder-icon">
+          <Folder size={18} />
+        </span>
+        <strong>{folder.name}</strong>
+      </span>
+      <span className="mode-pill" title={modeCopy[folder.localMode]} aria-label={modeCopy[folder.localMode]}>
+        <ModeIcon size={15} />
+      </span>
+      <span className={`status-pill ${folder.status}`} title={statusCopy[folder.status]} aria-label={statusCopy[folder.status]}>
+        <StatusIcon size={15} />
+      </span>
+      <span className="size-cell">
+        <span>{folder.sizeLabel}</span>
+        <button
+          className="row-action"
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggle()
+          }}
+          title={folder.status === 'paused' ? 'Resume' : 'Pause'}
+          aria-label={folder.status === 'paused' ? 'Resume' : 'Pause'}
+        >
+          {folder.status === 'paused' ? <Play size={15} /> : <Pause size={15} />}
+        </button>
+      </span>
+    </button>
+  )
+}
+
+export default App
