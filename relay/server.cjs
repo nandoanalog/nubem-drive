@@ -117,6 +117,8 @@ const formatPairCode = (value) => {
   return code.match(/.{1,4}/g)?.join('-') || code;
 };
 
+const isCodeActive = (pair) => !pair.codeExpiresAt || new Date(pair.codeExpiresAt).getTime() > Date.now();
+
 const makeCode = (state) => {
   for (let index = 0; index < 20; index += 1) {
     let code = '';
@@ -124,9 +126,7 @@ const makeCode = (state) => {
       code += pairCodeAlphabet[crypto.randomInt(0, pairCodeAlphabet.length)];
     }
 
-    const exists = Object.values(state.pairs).some(
-      (pair) => pair.code === code && new Date(pair.codeExpiresAt).getTime() > Date.now()
-    );
+    const exists = Object.values(state.pairs).some((pair) => pair.code === code && isCodeActive(pair));
     if (!exists) return code;
   }
 
@@ -182,6 +182,7 @@ const pairPayload = (pair, extra = {}) => ({
   pairId: pair.id,
   code: pair.code ? formatPairCode(pair.code) : '',
   expiresAt: pair.codeExpiresAt,
+  vault: pair.vault || null,
   storageName: pair.storage?.name,
   devices: publicDevices(pair),
   folders: cleanFolders(pair.folders),
@@ -189,9 +190,7 @@ const pairPayload = (pair, extra = {}) => ({
 });
 
 const findPairByCode = (state, code) =>
-  Object.values(state.pairs).find(
-    (pair) => pair.code === code && new Date(pair.codeExpiresAt).getTime() > Date.now()
-  );
+  Object.values(state.pairs).find((pair) => pair.code === code && isCodeActive(pair));
 
 const verifyPair = (state, pairId, token) => {
   const pair = state.pairs[pairId];
@@ -221,6 +220,10 @@ const publicRequest = (request) => ({
   type: request.type,
   folderId: request.folderId,
   relativePath: request.relativePath,
+  fileName: request.fileName,
+  totalBytes: request.totalBytes,
+  sizeLabel: request.sizeLabel,
+  chunkCount: request.chunkCount,
   requesterId: request.requesterId,
   createdAt: request.createdAt,
 });
@@ -238,6 +241,73 @@ const requestResult = (request) => ({
 });
 
 const handlers = {
+  'POST /api/drive/vaults/create': async (body) => {
+    const state = readState();
+    const pairId = crypto.randomUUID();
+    const token = crypto.randomBytes(32).toString('hex');
+    const code = makeCode(state);
+    const storage = cleanDevice(body.device, 'storage');
+    const folders = cleanFolders([body.folder || {}]);
+    const folder = folders[0] || {
+      id: crypto.randomUUID(),
+      name: 'Vault',
+      path: 'Vault',
+      sizeLabel: 'Cloud',
+      itemCount: 0,
+      updatedAt: now(),
+      status: 'synced',
+      localMode: 'online',
+      devices: [],
+      progress: 100,
+    };
+
+    state.pairs[pairId] = {
+      id: pairId,
+      code,
+      codeExpiresAt: '',
+      createdAt: now(),
+      vault: {
+        id: folder.id,
+        name: folder.name,
+      },
+      storage,
+      clients: {},
+      folders: [folder],
+      requests: {},
+      tokens: {
+        [token]: storage.id,
+      },
+    };
+
+    writeState(state);
+    return pairPayload(state.pairs[pairId], { token });
+  },
+
+  'POST /api/drive/vaults/join': async (body, request) => {
+    const code = normalizePairCode(body.code);
+    const state = readState();
+
+    if (!joinAllowed(state, request)) {
+      return { status: 429, payload: { ok: false, error: 'Too many attempts. Try later.' } };
+    }
+
+    const pair = findPairByCode(state, code);
+
+    if (!pair) {
+      joinAttempt(state, request);
+      writeState(prunePairs(state));
+      return { status: 404, payload: { ok: false, error: 'Code expired or wrong' } };
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const client = cleanDevice(body.device, 'client');
+    pair.clients[client.id] = client;
+    pair.tokens[token] = client.id;
+    writeState(state);
+
+    return pairPayload(pair, { token });
+  },
+
   'POST /api/drive/pair-codes': async (body) => {
     const state = readState();
     const pairId = crypto.randomUUID();
@@ -322,15 +392,20 @@ const handlers = {
       return { status: 401, payload: { ok: false, error: 'Not linked' } };
     }
 
-    const type = body.type === 'download' ? 'download' : 'list';
+    const allowedTypes = new Set(['download', 'list', 'upload']);
+    const type = allowedTypes.has(body.type) ? body.type : 'list';
     const requestId = crypto.randomUUID();
     const request = {
       id: requestId,
       type,
       folderId: String(body.folderId || '').slice(0, 80),
       relativePath: String(body.relativePath || '').slice(0, 2000),
+      fileName: String(body.fileName || '').slice(0, 260),
+      totalBytes: Number.isFinite(body.totalBytes) ? body.totalBytes : 0,
+      sizeLabel: String(body.sizeLabel || '').slice(0, 40),
+      chunkCount: Number.isFinite(body.chunkCount) ? body.chunkCount : 0,
       requesterId: tokenDeviceId(pair, body.token),
-      status: 'pending',
+      status: type === 'upload' ? 'uploading' : 'pending',
       createdAt: now(),
       updatedAt: now(),
     };
@@ -340,6 +415,30 @@ const handlers = {
     writeState(prunePairs(state));
 
     return { ok: true, requestId };
+  },
+
+  'POST /api/drive/requests/upload-ready': async (body) => {
+    const state = readState();
+    const pair = verifyPair(state, body.pairId, body.token);
+
+    if (!pair) {
+      return { status: 401, payload: { ok: false, error: 'Not linked' } };
+    }
+
+    const request = pair.requests?.[body.requestId];
+    if (!request || request.type !== 'upload') {
+      return { status: 404, payload: { ok: false, error: 'Request expired' } };
+    }
+
+    if (request.requesterId !== tokenDeviceId(pair, body.token)) {
+      return { status: 403, payload: { ok: false, error: 'Not your request' } };
+    }
+
+    request.status = 'pending';
+    request.updatedAt = now();
+    writeState(state);
+
+    return { ok: true };
   },
 
   'POST /api/drive/requests/poll': async (body) => {
@@ -410,12 +509,16 @@ const handlers = {
     }
 
     const request = pair.requests?.[body.requestId];
-    if (!request || request.type !== 'download') {
+    if (!request || !['download', 'upload'].includes(request.type)) {
       return { status: 404, payload: { ok: false, error: 'Request expired' } };
     }
 
     if (body.data) {
-      if (tokenRole(pair, body.token) !== 'storage') {
+      const requesterId = tokenDeviceId(pair, body.token);
+      const canWriteDownloadChunk = request.type === 'download' && tokenRole(pair, body.token) === 'storage';
+      const canWriteUploadChunk = request.type === 'upload' && request.requesterId === requesterId;
+
+      if (!canWriteDownloadChunk && !canWriteUploadChunk) {
         return { status: 401, payload: { ok: false, error: 'Storage token required' } };
       }
 

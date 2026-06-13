@@ -42,6 +42,14 @@ const updateDefaults = (updates = {}) => ({
 const makeInitialState = () => {
   const deviceId = crypto.randomUUID();
 
+  const folders = Array.isArray(state.folders)
+    ? state.folders.map((folder) => ({
+        ...folder,
+        vaultRole: folder.vaultRole || (folder.pairId && pairing.role === 'client' ? 'client' : 'storage'),
+        relayUrl: normalizeRelayUrl(folder.relayUrl || pairing.relayUrl || defaultRelayUrl),
+      }))
+    : [];
+
   return {
     storageNode: {
       name: `${os.hostname()} storage`,
@@ -126,7 +134,7 @@ const normalizeState = (rawState) => {
     },
     currentDevice,
     pairing,
-    folders: Array.isArray(state.folders) ? state.folders : [],
+    folders,
     activity: Array.isArray(state.activity) ? state.activity : [],
     updates: updateDefaults(state.updates),
     devices: [localDevice, ...devices],
@@ -164,6 +172,8 @@ const makeFolder = (folderPath) => {
     id: crypto.randomUUID(),
     name,
     path: folderPath,
+    vaultRole: 'storage',
+    relayUrl: defaultRelayUrl,
     sizeLabel: 'Scanning',
     itemCount: 0,
     updatedAt: now(),
@@ -254,6 +264,19 @@ const publicCloudFolders = (state) =>
     progress: 100,
   }));
 
+const publicVaultFolder = (state, folder) => ({
+  id: folder.id,
+  name: folder.name,
+  path: folder.name,
+  sizeLabel: folder.sizeLabel === 'Scanning' ? 'Cloud' : folder.sizeLabel,
+  itemCount: folder.itemCount,
+  updatedAt: folder.updatedAt,
+  status: folder.status === 'paused' ? 'paused' : 'synced',
+  localMode: 'online',
+  devices: [state.currentDevice.name],
+  progress: 100,
+});
+
 const remoteFoldersFromPayload = (payload) =>
   Array.isArray(payload.folders)
     ? payload.folders.map((folder) => ({
@@ -316,8 +339,120 @@ const markRelayError = (state, message) =>
     },
   });
 
-const refreshPairingState = async () => {
+const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
+  writeState({
+    ...state,
+    folders: state.folders.map((folder) => {
+      if (folder.id !== folderId) return folder;
+      const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
+      return {
+        ...folder,
+        ...(remoteFolder && vaultRole === 'client'
+          ? {
+              name: remoteFolder.name || folder.name,
+              path: remoteFolder.path || remoteFolder.name || folder.path,
+              sizeLabel: remoteFolder.sizeLabel || folder.sizeLabel,
+              itemCount: Number.isFinite(remoteFolder.itemCount) ? remoteFolder.itemCount : folder.itemCount,
+              updatedAt: remoteFolder.updatedAt || folder.updatedAt,
+              status: remoteFolder.status || folder.status,
+              localMode: 'online',
+              devices: remoteFolder.devices?.length ? remoteFolder.devices : [payload.storageName || 'Storage PC'],
+              progress: Number.isFinite(remoteFolder.progress) ? remoteFolder.progress : folder.progress,
+            }
+          : {}),
+        vaultRole,
+        relayUrl: normalizeRelayUrl(folder.relayUrl || state.pairing.relayUrl || defaultRelayUrl),
+        pairId: payload.pairId || folder.pairId,
+        token: payload.token || folder.token,
+        code: payload.code || folder.code,
+        codeExpiresAt: payload.expiresAt || folder.codeExpiresAt,
+        storageName: payload.storageName || folder.storageName,
+      };
+    }),
+    devices: Array.isArray(payload.devices)
+      ? payload.devices.map((device) => mapRelayDevice(device, state.currentDevice.id))
+      : state.devices,
+  });
+
+const shareVault = async (folderId, relayUrl = defaultRelayUrl) => {
   const state = ensureState();
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder) {
+    throw new Error('Vault not found');
+  }
+
+  if (folder.pairId && folder.token && folder.code) {
+    return state;
+  }
+
+  const nextRelayUrl = normalizeRelayUrl(relayUrl || folder.relayUrl || defaultRelayUrl);
+  const payload = await relayRequest(nextRelayUrl, '/api/drive/vaults/create', {
+    device: localRelayDevice(state, 'storage'),
+    folder: publicVaultFolder(state, folder),
+  });
+
+  const nextState = applyVaultPayloadToFolder(
+    {
+      ...state,
+      folders: state.folders.map((item) =>
+        item.id === folder.id ? { ...item, relayUrl: nextRelayUrl, vaultRole: 'storage' } : item
+      ),
+    },
+    folder.id,
+    payload,
+    'storage'
+  );
+
+  return writeState(addActivity(nextState, 'vault', folder.name, payload.code || 'Shared'));
+};
+
+const ensureStorageVaultsShared = async () => {
+  let state = ensureState();
+  const storageFolders = state.folders.filter((folder) => folder.vaultRole !== 'client' && !folder.pairId);
+
+  for (const folder of storageFolders) {
+    try {
+      state = await shareVault(folder.id, folder.relayUrl || state.pairing.relayUrl || defaultRelayUrl);
+    } catch {
+      state = ensureState();
+    }
+  }
+
+  return state;
+};
+
+const refreshPairingState = async () => {
+  let state = await ensureStorageVaultsShared();
+  const vaults = state.folders.filter((folder) => folder.pairId && folder.token);
+
+  if (vaults.length === 0 && (!state.pairing.pairId || !state.pairing.token)) {
+    return state;
+  }
+
+  for (const folder of vaults) {
+    try {
+      const payload = await relayRequest(folder.relayUrl || defaultRelayUrl, '/api/drive/heartbeat', {
+        pairId: folder.pairId,
+        token: folder.token,
+        device: localRelayDevice(state, folder.vaultRole || 'storage'),
+        folders: folder.vaultRole === 'storage' ? [publicVaultFolder(state, folder)] : undefined,
+      });
+      state = applyVaultPayloadToFolder(state, folder.id, payload, folder.vaultRole || 'storage');
+      if (folder.vaultRole === 'storage') {
+        handlePendingRelayRequests(folder.id).catch(() => undefined);
+      }
+    } catch (error) {
+      state = writeState({
+        ...ensureState(),
+        folders: ensureState().folders.map((item) =>
+          item.id === folder.id
+            ? { ...item, status: 'offline', updatedAt: now() }
+            : item
+        ),
+      });
+    }
+  }
+
   if (!state.pairing.pairId || !state.pairing.token) {
     return state;
   }
@@ -330,9 +465,6 @@ const refreshPairingState = async () => {
       folders: state.pairing.role === 'storage' ? publicCloudFolders(state) : undefined,
     });
     const nextState = applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
-    if (nextState.pairing.role === 'storage') {
-      handlePendingRelayRequests().catch(() => undefined);
-    }
     return nextState;
   } catch (error) {
     return markRelayError(state, error instanceof Error ? error.message : 'Relay offline');
@@ -377,19 +509,38 @@ const joinPairing = async (relayUrl, code) => {
   }
 
   const nextRelayUrl = normalizeRelayUrl(relayUrl);
-  const payload = await relayRequest(nextRelayUrl, '/api/drive/join', {
+  const payload = await relayRequest(nextRelayUrl, '/api/drive/vaults/join', {
     code: cleanCode,
     device: localRelayDevice(state, 'client'),
   });
+  const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
+  const folderId = remoteFolder?.id || payload.vault?.id || crypto.randomUUID();
+  const known = state.folders.some((folder) => folder.pairId === payload.pairId || folder.id === folderId);
+  const joinedVault = {
+    id: folderId,
+    name: remoteFolder?.name || payload.vault?.name || payload.storageName || 'Vault',
+    path: remoteFolder?.path || remoteFolder?.name || 'Vault',
+    vaultRole: 'client',
+    relayUrl: nextRelayUrl,
+    pairId: payload.pairId,
+    token: payload.token,
+    storageName: payload.storageName,
+    sizeLabel: remoteFolder?.sizeLabel || 'Cloud',
+    itemCount: Number.isFinite(remoteFolder?.itemCount) ? remoteFolder.itemCount : 0,
+    updatedAt: remoteFolder?.updatedAt || now(),
+    status: remoteFolder?.status || 'synced',
+    localMode: 'online',
+    devices: remoteFolder?.devices?.length ? remoteFolder.devices : [payload.storageName || 'Storage PC'],
+    progress: 100,
+  };
   const nextState = addActivity(
     {
       ...state,
+      folders: known ? state.folders : [joinedVault, ...state.folders],
       pairing: {
         relayUrl: nextRelayUrl,
-        role: 'client',
+        role: state.pairing.role || 'client',
         status: 'linked',
-        pairId: payload.pairId,
-        token: payload.token,
         storageName: payload.storageName,
         message: '',
       },
@@ -399,7 +550,7 @@ const joinPairing = async (relayUrl, code) => {
     payload.storageName || 'Storage PC'
   );
 
-  return applyRelaySnapshot(writeState(nextState), payload, 'linked');
+  return writeState(nextState);
 };
 
 const resetPairing = () => {
@@ -434,6 +585,23 @@ const getPairCredentials = () => {
     pairId: state.pairing.pairId,
     token: state.pairing.token,
     relayUrl: state.pairing.relayUrl,
+  };
+};
+
+const getVaultCredentials = (folderId) => {
+  const state = ensureState();
+  const folder = state.folders.find((item) => item.id === folderId);
+
+  if (!folder?.pairId || !folder.token) {
+    throw new Error('Vault not linked');
+  }
+
+  return {
+    state,
+    folder,
+    pairId: folder.pairId,
+    token: folder.token,
+    relayUrl: folder.relayUrl || defaultRelayUrl,
   };
 };
 
@@ -509,7 +677,7 @@ const listCloudFolder = (state, folderId, relativePath = '') => {
 };
 
 const createRelayRequest = async (type, folderId, relativePath) => {
-  const { pairId, relayUrl, token } = getPairCredentials();
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
     pairId,
     token,
@@ -523,7 +691,9 @@ const createRelayRequest = async (type, folderId, relativePath) => {
 
 const waitForRelayRequest = async (requestId, timeoutMs = 120000) => {
   const startedAt = Date.now();
-  const { pairId, relayUrl, token } = getPairCredentials();
+  const state = ensureState();
+  const folder = state.folders.find((item) => item.pairId && item.token);
+  const { pairId, relayUrl, token } = getVaultCredentials(folder?.id);
 
   while (Date.now() - startedAt < timeoutMs) {
     const payload = await relayRequest(relayUrl, '/api/drive/requests/result', {
@@ -546,8 +716,33 @@ const waitForRelayRequest = async (requestId, timeoutMs = 120000) => {
   throw new Error('Storage PC did not respond');
 };
 
-const completeRelayRequest = async (requestId, result, error) => {
-  const { pairId, relayUrl, token } = getPairCredentials();
+const waitForVaultRequest = async (folderId, requestId, timeoutMs = 120000) => {
+  const startedAt = Date.now();
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const payload = await relayRequest(relayUrl, '/api/drive/requests/result', {
+      pairId,
+      token,
+      requestId,
+    });
+
+    if (payload.status === 'ready') {
+      return payload.result;
+    }
+
+    if (payload.status === 'error') {
+      throw new Error(payload.error || 'Remote request failed');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+
+  throw new Error('Storage PC did not respond');
+};
+
+const completeRelayRequest = async (folderId, requestId, result, error) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   return relayRequest(relayUrl, '/api/drive/requests/complete', {
     pairId,
     token,
@@ -557,8 +752,8 @@ const completeRelayRequest = async (requestId, result, error) => {
   });
 };
 
-const uploadRelayChunk = async (requestId, index, data) => {
-  const { pairId, relayUrl, token } = getPairCredentials();
+const uploadRelayChunk = async (folderId, requestId, index, data) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   return relayRequest(relayUrl, '/api/drive/requests/chunk', {
     pairId,
     token,
@@ -568,8 +763,17 @@ const uploadRelayChunk = async (requestId, index, data) => {
   });
 };
 
-const downloadRelayChunk = async (requestId, index) => {
-  const { pairId, relayUrl, token } = getPairCredentials();
+const markUploadReady = async (folderId, requestId) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  return relayRequest(relayUrl, '/api/drive/requests/upload-ready', {
+    pairId,
+    token,
+    requestId,
+  });
+};
+
+const downloadRelayChunk = async (folderId, requestId, index) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   return relayRequest(relayUrl, '/api/drive/requests/chunk', {
     pairId,
     token,
@@ -597,7 +801,7 @@ const sendFileToRelay = async (requestId, folderId, relativePath) => {
     while (offset < stat.size) {
       const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
       if (bytesRead <= 0) break;
-      await uploadRelayChunk(requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
+      await uploadRelayChunk(folderId, requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
       offset += bytesRead;
       index += 1;
     }
@@ -614,15 +818,42 @@ const sendFileToRelay = async (requestId, folderId, relativePath) => {
   };
 };
 
-const handlePendingRelayRequests = async () => {
+const receiveFileFromRelay = async (vaultFolderId, request) => {
   const state = ensureState();
-  if (state.pairing.role !== 'storage' || !state.pairing.pairId || !state.pairing.token) {
+  const { target } = resolveCloudPath(state, vaultFolderId, request.relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+
+  const stream = fs.createWriteStream(target);
+  try {
+    for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
+      const chunk = await downloadRelayChunk(vaultFolderId, request.id, index);
+      stream.write(Buffer.from(chunk.data, 'base64'));
+    }
+  } finally {
+    await new Promise((resolve, reject) => {
+      stream.end((error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  return {
+    fileName: path.basename(target),
+    relativePath: request.relativePath,
+    totalBytes: fs.statSync(target).size,
+    sizeLabel: formatBytes(fs.statSync(target).size),
+    writtenAt: now(),
+  };
+};
+
+const handlePendingRelayRequests = async (vaultFolderId) => {
+  const state = ensureState();
+  const folder = state.folders.find((item) => item.id === vaultFolderId);
+  if (!folder || folder.vaultRole !== 'storage' || !folder.pairId || !folder.token) {
     return;
   }
 
-  const payload = await relayRequest(state.pairing.relayUrl, '/api/drive/requests/poll', {
-    pairId: state.pairing.pairId,
-    token: state.pairing.token,
+  const payload = await relayRequest(folder.relayUrl || defaultRelayUrl, '/api/drive/requests/poll', {
+    pairId: folder.pairId,
+    token: folder.token,
   });
 
   for (const request of payload.requests || []) {
@@ -634,11 +865,13 @@ const handlePendingRelayRequests = async () => {
     try {
       const result =
         request.type === 'download'
-          ? await sendFileToRelay(request.id, request.folderId, request.relativePath)
-          : listCloudFolder(ensureState(), request.folderId, request.relativePath);
-      await completeRelayRequest(request.id, result);
+          ? await sendFileToRelay(request.id, vaultFolderId, request.relativePath)
+          : request.type === 'upload'
+            ? await receiveFileFromRelay(vaultFolderId, request)
+            : listCloudFolder(ensureState(), vaultFolderId, request.relativePath);
+      await completeRelayRequest(vaultFolderId, request.id, result);
     } catch (error) {
-      await completeRelayRequest(request.id, null, error instanceof Error ? error.message : 'Request failed');
+      await completeRelayRequest(vaultFolderId, request.id, null, error instanceof Error ? error.message : 'Request failed');
     } finally {
       processingRelayRequests.delete(request.id);
     }
@@ -652,7 +885,7 @@ const browseRemoteFolder = async (folderId, relativePath = '') => {
   }
 
   const requestId = await createRelayRequest('list', folderId, relativePath);
-  return waitForRelayRequest(requestId);
+  return waitForVaultRequest(folderId, requestId);
 };
 
 const downloadRemoteFile = async (folderId, relativePath = '') => {
@@ -665,7 +898,7 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
   }
 
   const requestId = await createRelayRequest('download', folderId, relativePath);
-  const result = await waitForRelayRequest(requestId, 15 * 60 * 1000);
+  const result = await waitForVaultRequest(folderId, requestId, 15 * 60 * 1000);
   const saveResult = await dialog.showSaveDialog(mainWindow, {
     title: 'Save from Nubem Drive',
     defaultPath: result.fileName,
@@ -679,7 +912,7 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
 
   try {
     for (let index = 0; index < result.chunkCount; index += 1) {
-      const chunk = await downloadRelayChunk(requestId, index);
+      const chunk = await downloadRelayChunk(folderId, requestId, index);
       stream.write(Buffer.from(chunk.data, 'base64'));
     }
   } finally {
@@ -690,6 +923,109 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
 
   writeState(addActivity(ensureState(), 'download', result.fileName, result.sizeLabel || 'Downloaded'));
   return { ok: true, filePath: saveResult.filePath };
+};
+
+const findDefaultClientVault = (state) => state.folders.find((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
+
+const walkFiles = (root) => {
+  const files = [];
+  const visit = (target) => {
+    const stat = fs.statSync(target);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(target)) {
+        visit(path.join(target, entry));
+      }
+      return;
+    }
+
+    if (stat.isFile()) {
+      files.push({ path: target, size: stat.size });
+    }
+  };
+
+  visit(root);
+  return files;
+};
+
+const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(vaultFolderId);
+  const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
+    pairId,
+    token,
+    type: 'upload',
+    folderId: vaultFolderId,
+    relativePath,
+    fileName,
+    totalBytes,
+    sizeLabel: formatBytes(totalBytes),
+    chunkCount,
+  });
+
+  return payload.requestId;
+};
+
+const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath) => {
+  const stat = fs.statSync(sourceFile);
+  const chunkSize = 768 * 1024;
+  const chunkCount = Math.max(1, Math.ceil(stat.size / chunkSize));
+  const requestId = await createUploadRequest(vaultFolderId, targetRelativePath, path.basename(sourceFile), stat.size, chunkCount);
+  const file = fs.openSync(sourceFile, 'r');
+  const buffer = Buffer.alloc(chunkSize);
+  let index = 0;
+  let offset = 0;
+
+  try {
+    if (stat.size === 0) {
+      await uploadRelayChunk(vaultFolderId, requestId, 0, Buffer.alloc(0).toString('base64'));
+    }
+
+    while (offset < stat.size) {
+      const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
+      if (bytesRead <= 0) break;
+      await uploadRelayChunk(vaultFolderId, requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
+      offset += bytesRead;
+      index += 1;
+    }
+  } finally {
+    fs.closeSync(file);
+  }
+
+  await markUploadReady(vaultFolderId, requestId);
+  return waitForVaultRequest(vaultFolderId, requestId, 15 * 60 * 1000);
+};
+
+const uploadFolderToVault = async (vaultFolderId, folderPath) => {
+  const root = path.resolve(folderPath);
+  const rootName = path.basename(root) || 'Folder';
+  const files = walkFiles(root);
+
+  for (const file of files) {
+    const relativePath = [rootName, relativeCloudPath(root, file.path)].filter(Boolean).join('/');
+    await uploadFileToVault(vaultFolderId, file.path, relativePath);
+  }
+
+  return {
+    name: rootName,
+    fileCount: files.length,
+  };
+};
+
+const cloudFoldersToDefaultVault = async (folderPaths) => {
+  let state = ensureState();
+  const vault = findDefaultClientVault(state);
+
+  if (!vault) {
+    focusMainWindow();
+    throw new Error('Join a vault first');
+  }
+
+  const folders = resolveDirectoryPaths(folderPaths);
+  for (const folderPath of folders) {
+    const result = await uploadFolderToVault(vault.id, folderPath);
+    state = writeState(addActivity(ensureState(), 'upload', result.name, `${result.fileCount} files to ${vault.name}`));
+  }
+
+  return state;
 };
 
 const compareVersions = (left, right) => {
@@ -991,6 +1327,21 @@ const addFoldersFromPaths = (folderPaths, detail = 'Queued for storage') => {
   return { state: writeState(nextState), added: nextFolders };
 };
 
+const addVaultsFromPaths = async (folderPaths, detail = 'Vault added') => {
+  let result = addFoldersFromPaths(folderPaths, detail);
+  let state = result.state;
+
+  for (const folder of result.added) {
+    try {
+      state = await shareVault(folder.id, folder.relayUrl || defaultRelayUrl);
+    } catch {
+      state = ensureState();
+    }
+  }
+
+  return { state, added: result.added };
+};
+
 const getCloudFolderArgs = (argv = process.argv) => {
   const marker = argv.indexOf('--cloud-folder');
   if (marker === -1) {
@@ -1055,13 +1406,24 @@ const focusMainWindow = () => {
   mainWindow.focus();
 };
 
-const cloudFoldersAndNotify = (folderPaths) => {
-  const { added } = addFoldersFromPaths(folderPaths, 'Queued from context menu');
+const cloudFoldersAndNotify = async (folderPaths) => {
+  const state = ensureState();
+  if (findDefaultClientVault(state)) {
+    try {
+      await cloudFoldersToDefaultVault(folderPaths);
+      notifyClouded(resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath })));
+    } catch (error) {
+      if (Notification.isSupported()) {
+        new Notification({ title: 'Nubem Drive', body: error instanceof Error ? error.message : 'Upload failed' }).show();
+      }
+    }
+    return;
+  }
+
+  const { added } = await addVaultsFromPaths(folderPaths, 'Vault added from context menu');
   if (added.length > 0) {
     notifyClouded(added);
   }
-
-  return added;
 };
 
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -1072,9 +1434,9 @@ if (!singleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const cloudFolderArgs = getCloudFolderArgs(argv);
 
-    app.whenReady().then(() => {
+    app.whenReady().then(async () => {
       if (cloudFolderArgs.length > 0) {
-        cloudFoldersAndNotify(cloudFolderArgs);
+        await cloudFoldersAndNotify(cloudFolderArgs);
         return;
       }
 
@@ -1083,14 +1445,14 @@ if (!singleInstanceLock) {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!singleInstanceLock) {
     return;
   }
 
   const cloudFolderArgs = getCloudFolderArgs();
   if (cloudFolderArgs.length > 0) {
-    cloudFoldersAndNotify(cloudFolderArgs);
+    await cloudFoldersAndNotify(cloudFolderArgs);
     setTimeout(() => app.quit(), 600);
     return;
   }
@@ -1102,7 +1464,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('folders:choose', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Add folder',
+      title: findDefaultClientVault(ensureState()) ? 'Cloud folder' : 'Add vault',
       properties: ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 
@@ -1110,7 +1472,24 @@ app.whenReady().then(() => {
       return ensureState();
     }
 
-    return addFoldersFromPaths(result.filePaths).state;
+    if (findDefaultClientVault(ensureState())) {
+      return cloudFoldersToDefaultVault(result.filePaths);
+    }
+
+    return (await addVaultsFromPaths(result.filePaths, 'Vault added')).state;
+  });
+
+  ipcMain.handle('folders:cloud', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Cloud folder',
+      properties: ['openDirectory', 'multiSelections', 'createDirectory'],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return ensureState();
+    }
+
+    return cloudFoldersToDefaultVault(result.filePaths);
   });
 
   ipcMain.handle('folders:remove', async (_event, id) => {
@@ -1187,6 +1566,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('pairing:create-code', (_event, relayUrl) => createPairCode(relayUrl));
   ipcMain.handle('pairing:join', (_event, relayUrl, code) => joinPairing(relayUrl, code));
+  ipcMain.handle('vaults:share', (_event, id, relayUrl) => shareVault(id, relayUrl));
   ipcMain.handle('pairing:refresh', () => refreshPairingState());
   ipcMain.handle('pairing:reset', () => resetPairing());
   ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));

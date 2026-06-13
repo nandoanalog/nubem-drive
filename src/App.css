@@ -690,6 +690,30 @@ button:disabled {
   background: #ffe5de;
 }
 
+.quick-actions button.code-action {
+  border-color: #b9ded4;
+  color: #0f5e57;
+  background: #e5f5ef;
+}
+
+.vault-code {
+  min-height: 40px;
+  width: 100%;
+  padding: 0 10px;
+  border: 1px solid #b9ded4;
+  border-radius: 8px;
+  color: #0f5e57;
+  background: #e5f5ef;
+  font-size: 16px;
+  font-weight: 850;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.full-width {
+  width: 100%;
+}
+
 .meta-strip {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

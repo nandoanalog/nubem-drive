@@ -14,7 +14,6 @@ import {
   Laptop,
   Link2,
   Pause,
-  Play,
   Plus,
   RefreshCcw,
   Search,
@@ -25,7 +24,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, LocalMode, RemoteEntry, RemoteListing } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'code' | 'join' | 'reset' | null
@@ -136,26 +135,12 @@ function formatPairCode(value?: string) {
 }
 
 function pairingLine(state: AppState) {
-  if (state.pairing.status === 'linked') {
-    const otherDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
-    return otherDevices.length > 0 ? `${otherDevices.length} linked` : 'Linked'
-  }
-
-  if (state.pairing.status === 'waiting') return 'Waiting'
+  const joined = state.folders.filter((folder) => folder.vaultRole === 'client').length
+  const shared = state.folders.filter((folder) => folder.vaultRole !== 'client').length
+  if (joined > 0) return `${joined} joined`
+  if (shared > 0) return `${shared} shared`
   if (state.pairing.status === 'error') return 'Check host'
-  return 'Not linked'
-}
-
-const modeCopy: Record<LocalMode, string> = {
-  online: 'Online only',
-  local: 'Keep local',
-  mirror: 'Mirror',
-}
-
-const modeIcons: Record<LocalMode, typeof Cloud> = {
-  online: Cloud,
-  local: Download,
-  mirror: HardDrive,
+  return 'No vaults'
 }
 
 const statusIcons: Record<FolderStatus, typeof Cloud> = {
@@ -210,7 +195,6 @@ function App() {
   const [remoteError, setRemoteError] = useState('')
 
   const api = window.nubemDrive
-  const isClient = state.pairing.role === 'client'
 
   useEffect(() => {
     let active = true
@@ -262,12 +246,13 @@ function App() {
 
   const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
   const selectedFolderId = selectedFolder?.id
+  const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
 
   useEffect(() => {
     let active = true
 
     async function loadRemoteRoot() {
-      if (!api || !selectedFolderId || !isClient || state.pairing.status !== 'linked') {
+      if (!api || !selectedFolderId || !selectedIsClientVault) {
         setRemoteListing(null)
         setRemoteError('')
         return
@@ -297,7 +282,7 @@ function App() {
     return () => {
       active = false
     }
-  }, [api, isClient, selectedFolderId, state.pairing.status])
+  }, [api, selectedFolderId, selectedIsClientVault])
 
   async function chooseFolders() {
     if (!api) return
@@ -317,18 +302,6 @@ function App() {
 
       return nextState.folders[0]?.id
     })
-  }
-
-  async function setFolderMode(folder: CloudFolder, mode: LocalMode) {
-    if (!api) return
-    const nextState = await api.setFolderMode(folder.id, mode)
-    setState(nextState)
-  }
-
-  async function toggleSync(folder: CloudFolder) {
-    if (!api) return
-    const nextState = await api.toggleFolderSync(folder.id)
-    setState(nextState)
   }
 
   function revealFolder(folder: CloudFolder) {
@@ -363,10 +336,19 @@ function App() {
 
   async function createPairCode() {
     if (!api) return
+    if (!selectedFolder || selectedFolder.vaultRole === 'client') {
+      setPairError('Select a vault')
+      return
+    }
+    if (selectedFolder.code) {
+      navigator.clipboard?.writeText(selectedFolder.code)
+      return
+    }
+
     setPairBusy('code')
     setPairError('')
     try {
-      const nextState = await api.createPairCode(relayHost)
+      const nextState = await api.shareVault(selectedFolder.id, relayHost)
       setState(nextState)
     } catch (error) {
       setPairError(error instanceof Error ? error.message : 'Could not create code')
@@ -457,7 +439,7 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>{isClient ? 'Cloud' : 'Folders'}</h1>
+            <h1>Vaults</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -487,11 +469,14 @@ function App() {
                 )}
               </button>
             ) : null}
-            {!isClient ? (
-              <button className="primary-button icon-only" onClick={chooseFolders} title="Add folder" aria-label="Add folder">
-                <Plus size={18} />
-              </button>
-            ) : null}
+            <button
+              className="primary-button icon-only"
+              onClick={chooseFolders}
+              title={selectedIsClientVault ? 'Cloud folder' : 'Add vault'}
+              aria-label={selectedIsClientVault ? 'Cloud folder' : 'Add vault'}
+            >
+              {selectedIsClientVault ? <UploadCloud size={18} /> : <Plus size={18} />}
+            </button>
           </div>
         </header>
 
@@ -507,6 +492,7 @@ function App() {
             relayHost={relayHost}
             setPairCode={setPairCode}
             setRelayHost={setRelayHost}
+            selectedFolder={selectedFolder}
             state={state}
           />
         ) : null}
@@ -544,7 +530,6 @@ function App() {
                     isSelected={selectedFolder?.id === folder.id}
                     key={folder.id}
                     onSelect={() => setSelectedId(folder.id)}
-                    onToggle={() => toggleSync(folder)}
                   />
                 ))
               )}
@@ -563,11 +548,21 @@ function App() {
                   </div>
                 </div>
 
-                {!isClient ? (
+                {!selectedIsClientVault ? (
                   <div className="quick-actions">
                     <button onClick={() => revealFolder(selectedFolder)} title={selectedFolder.path} aria-label="Reveal folder">
                       <ExternalLink size={15} />
                     </button>
+                    {selectedFolder.code ? (
+                      <button
+                        className="code-action"
+                        onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}
+                        title="Copy vault code"
+                        aria-label="Copy vault code"
+                      >
+                        <KeyRound size={15} />
+                      </button>
+                    ) : null}
                     <button
                       className="danger-action"
                       onClick={() => removeFolder(selectedFolder)}
@@ -586,7 +581,14 @@ function App() {
                   <span title="Devices">{selectedFolder.devices.length}</span>
                 </div>
 
-                {isClient ? (
+                {selectedFolder.code && !selectedIsClientVault ? <button className="vault-code" onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}>{selectedFolder.code}</button> : null}
+
+                {selectedIsClientVault ? (
+                  <>
+                    <button className="primary-button full-width" onClick={chooseFolders}>
+                      <UploadCloud size={17} />
+                      Cloud folder
+                    </button>
                   <RemoteBrowser
                     busy={remoteBusy}
                     error={remoteError}
@@ -594,44 +596,14 @@ function App() {
                     onDownload={downloadRemoteEntry}
                     onOpen={browseRemotePath}
                   />
-                ) : (
-                  <>
-                    <section className="control-section" aria-label="Local mode">
-                      <div className="mode-stack">
-                        {(['online', 'local', 'mirror'] as LocalMode[]).map((mode) => {
-                          const Icon = modeIcons[mode]
-                          return (
-                            <button
-                              className={selectedFolder.localMode === mode ? 'mode-option selected' : 'mode-option'}
-                              key={mode}
-                              title={modeCopy[mode]}
-                              aria-label={modeCopy[mode]}
-                              onClick={() => setFolderMode(selectedFolder, mode)}
-                            >
-                              <Icon size={18} />
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </section>
-
-                    <section className="control-section" aria-label="Progress">
-                      <div className="progress-line">
-                        <strong>{selectedFolder.progress}%</strong>
-                        <button
-                          className="icon-button compact"
-                          onClick={() => toggleSync(selectedFolder)}
-                          title={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
-                          aria-label={selectedFolder.status === 'paused' ? 'Resume' : 'Pause'}
-                        >
-                          {selectedFolder.status === 'paused' ? <Play size={17} /> : <Pause size={17} />}
-                        </button>
-                      </div>
-                      <div className="wide-progress">
-                        <span style={{ width: `${selectedFolder.progress}%` }} />
-                      </div>
-                    </section>
                   </>
+                ) : (
+                  <section className="control-section" aria-label="Vault">
+                    <button className="primary-button full-width" onClick={createPairCode}>
+                      <KeyRound size={17} />
+                      {selectedFolder.code ? 'Copy code' : 'Create code'}
+                    </button>
+                  </section>
                 )}
 
               </>
@@ -708,6 +680,7 @@ function PairPanel({
   relayHost,
   setPairCode,
   setRelayHost,
+  selectedFolder,
   state,
 }: {
   busy: PairBusy
@@ -720,6 +693,7 @@ function PairPanel({
   relayHost: string
   setPairCode: (value: string) => void
   setRelayHost: (value: string) => void
+  selectedFolder?: CloudFolder
   state: AppState
 }) {
   const pairingMessage = error || state.pairing.message
@@ -740,24 +714,24 @@ function PairPanel({
       <div className="pair-grid">
         <div className="pair-card">
           <HardDrive size={19} />
-          <strong>This PC</strong>
+          <strong>Vault</strong>
           <button className="primary-button" disabled={busy === 'code'} onClick={onCreateCode}>
-            {busy === 'code' ? '...' : 'Show code'}
+            {busy === 'code' ? '...' : selectedFolder?.code ? 'Copy code' : 'Show code'}
           </button>
-          {state.pairing.pairCode ? (
+          {selectedFolder?.code ? (
             <button
               className="pair-code"
-              onClick={() => navigator.clipboard?.writeText(state.pairing.pairCode || '')}
+              onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}
               title="Copy code"
             >
-              {formatPairCode(state.pairing.pairCode)}
+              {formatPairCode(selectedFolder.code)}
             </button>
           ) : null}
         </div>
 
         <form className="pair-card pair-form" onSubmit={onJoin}>
           <Laptop size={19} />
-          <strong>Windows</strong>
+          <strong>Join</strong>
           <label>
             <span>Host</span>
             <input value={relayHost} onChange={(event) => setRelayHost(event.target.value)} placeholder={defaultRelayHost} />
@@ -810,15 +784,12 @@ function FolderRow({
   folder,
   isSelected,
   onSelect,
-  onToggle,
 }: {
   folder: CloudFolder
   isSelected: boolean
   onSelect: () => void
-  onToggle: () => void
 }) {
   const StatusIcon = statusIcons[folder.status]
-  const ModeIcon = modeIcons[folder.localMode]
 
   return (
     <button className={isSelected ? 'folder-row selected' : 'folder-row'} onClick={onSelect}>
@@ -828,25 +799,14 @@ function FolderRow({
         </span>
         <strong>{folder.name}</strong>
       </span>
-      <span className="mode-pill" title={modeCopy[folder.localMode]} aria-label={modeCopy[folder.localMode]}>
-        <ModeIcon size={15} />
+      <span className="mode-pill" title={folder.vaultRole === 'client' ? 'Joined' : 'Shared'} aria-label={folder.vaultRole === 'client' ? 'Joined' : 'Shared'}>
+        {folder.vaultRole === 'client' ? <Download size={15} /> : <HardDrive size={15} />}
       </span>
       <span className={`status-pill ${folder.status}`} title={statusCopy[folder.status]} aria-label={statusCopy[folder.status]}>
         <StatusIcon size={15} />
       </span>
       <span className="size-cell">
         <span>{folder.sizeLabel}</span>
-        <button
-          className="row-action"
-          onClick={(event) => {
-            event.stopPropagation()
-            onToggle()
-          }}
-          title={folder.status === 'paused' ? 'Resume' : 'Pause'}
-          aria-label={folder.status === 'paused' ? 'Resume' : 'Pause'}
-        >
-          {folder.status === 'paused' ? <Play size={15} /> : <Pause size={15} />}
-        </button>
       </span>
     </button>
   )

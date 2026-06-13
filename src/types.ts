@@ -5,6 +5,13 @@ export type CloudFolder = {
   id: string
   name: string
   path: string
+  vaultRole?: PairingRole
+  relayUrl?: string
+  pairId?: string
+  token?: string
+  code?: string
+  codeExpiresAt?: string
+  storageName?: string
   sizeLabel: string
   itemCount: number
   updatedAt: string
@@ -86,7 +93,7 @@ export type RemoteDownloadResult = {
 
 export type ActivityItem = {
   id: string
-  type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download' | 'remove'
+  type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download' | 'remove' | 'vault'
   label: string
   detail: string
   at: string
@@ -110,12 +117,14 @@ export type AppState = {
 export type NubemDriveApi = {
   getState: () => Promise<AppState>
   chooseFolders: () => Promise<AppState>
+  cloudFolders: () => Promise<AppState>
   removeFolder: (id: string) => Promise<AppState>
   setFolderMode: (id: string, mode: LocalMode) => Promise<AppState>
   toggleFolderSync: (id: string) => Promise<AppState>
   revealFolder: (folderPath: string) => Promise<void>
   createPairCode: (relayUrl: string) => Promise<AppState>
   joinPairing: (relayUrl: string, code: string) => Promise<AppState>
+  shareVault: (id: string, relayUrl: string) => Promise<AppState>
   refreshPairing: () => Promise<AppState>
   resetPairing: () => Promise<AppState>
   browseRemoteFolder: (folderId: string, relativePath: string) => Promise<RemoteListing>
