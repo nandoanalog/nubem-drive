@@ -807,6 +807,41 @@ app.whenReady().then(() => {
     return addFoldersFromPaths(result.filePaths).state;
   });
 
+  ipcMain.handle('folders:remove', async (_event, id) => {
+    const state = ensureState();
+    const folder = state.folders.find((item) => item.id === id);
+
+    if (!folder) {
+      return state;
+    }
+
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Remove', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Remove from cloud',
+      message: `Remove "${folder.name}" from Nubem Drive?`,
+      detail: 'Files stay on this computer. Paired devices will stop seeing this folder.',
+    });
+
+    if (result.response !== 0) {
+      return ensureState();
+    }
+
+    const nextState = addActivity(
+      {
+        ...state,
+        folders: state.folders.filter((item) => item.id !== id),
+      },
+      'remove',
+      folder.name,
+      'Removed from cloud'
+    );
+
+    return writeState(nextState);
+  });
+
   ipcMain.handle('folders:set-mode', (_event, id, localMode) => {
     const state = ensureState();
     const folder = state.folders.find((item) => item.id === id);

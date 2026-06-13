@@ -654,6 +654,16 @@ button:disabled {
   cursor: pointer;
 }
 
+.quick-actions button.danger-action {
+  border-color: #efc0b7;
+  color: #a43b2d;
+  background: #fff1ed;
+}
+
+.quick-actions button.danger-action:hover {
+  background: #ffe5de;
+}
+
 .meta-strip {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

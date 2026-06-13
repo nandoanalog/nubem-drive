@@ -70,7 +70,7 @@ export type RemoteDownloadResult = {
 
 export type ActivityItem = {
   id: string
-  type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download'
+  type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download' | 'remove'
   label: string
   detail: string
   at: string
@@ -93,6 +93,7 @@ export type AppState = {
 export type NubemDriveApi = {
   getState: () => Promise<AppState>
   chooseFolders: () => Promise<AppState>
+  removeFolder: (id: string) => Promise<AppState>
   setFolderMode: (id: string, mode: LocalMode) => Promise<AppState>
   toggleFolderSync: (id: string) => Promise<AppState>
   revealFolder: (folderPath: string) => Promise<void>

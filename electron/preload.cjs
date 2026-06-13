@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('nubemDrive', {
   getState: () => ipcRenderer.invoke('app:get-state'),
   chooseFolders: () => ipcRenderer.invoke('folders:choose'),
+  removeFolder: (id) => ipcRenderer.invoke('folders:remove', id),
   setFolderMode: (id, mode) => ipcRenderer.invoke('folders:set-mode', id, mode),
   toggleFolderSync: (id) => ipcRenderer.invoke('folders:toggle-sync', id),
   revealFolder: (folderPath) => ipcRenderer.invoke('folders:reveal', folderPath),

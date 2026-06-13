@@ -13,13 +13,13 @@ import {
   KeyRound,
   Laptop,
   Link2,
-  MoreHorizontal,
   Pause,
   Play,
   Plus,
   RefreshCcw,
   Search,
   Server,
+  Trash2,
   UploadCloud,
   Wifi,
   X,
@@ -291,6 +291,19 @@ function App() {
     setSelectedId(nextState.folders[0]?.id)
   }
 
+  async function removeFolder(folder: CloudFolder) {
+    if (!api) return
+    const nextState = await api.removeFolder(folder.id)
+    setState(nextState)
+    setSelectedId((currentId) => {
+      if (currentId && nextState.folders.some((item) => item.id === currentId)) {
+        return currentId
+      }
+
+      return nextState.folders[0]?.id
+    })
+  }
+
   async function setFolderMode(folder: CloudFolder, mode: LocalMode) {
     if (!api) return
     const nextState = await api.setFolderMode(folder.id, mode)
@@ -500,15 +513,20 @@ function App() {
                   <div>
                     <h2>{selectedFolder.name}</h2>
                   </div>
-                  <button className="icon-button compact" title="More" aria-label="More">
-                    <MoreHorizontal size={18} />
-                  </button>
                 </div>
 
                 {!isClient ? (
                   <div className="quick-actions">
                     <button onClick={() => revealFolder(selectedFolder)} title={selectedFolder.path} aria-label="Reveal folder">
                       <ExternalLink size={15} />
+                    </button>
+                    <button
+                      className="danger-action"
+                      onClick={() => removeFolder(selectedFolder)}
+                      title="Remove from cloud"
+                      aria-label="Remove from cloud"
+                    >
+                      <Trash2 size={15} />
                     </button>
                   </div>
                 ) : null}
