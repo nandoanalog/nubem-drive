@@ -9,6 +9,7 @@ const defaultRelayUrl = 'https://drive.nubem.org';
 const pollIntervalMs = Number(process.env.NUBEM_STORAGE_POLL_MS || 5000);
 const chunkSize = 256 * 1024;
 const relayRequestLockTtlMs = 10 * 60 * 1000;
+const deleteRequestPrefix = '.nubem-command/delete/';
 const processingRelayRequests = new Set();
 const dataFile = () =>
   process.env.NUBEM_DRIVE_STATE ||
@@ -420,6 +421,23 @@ const releaseRelayRequestLock = (requestId) => {
   fs.rmSync(path.join(relayLockRoot(), requestId), { recursive: true, force: true });
 };
 
+const decodeDeleteRequestPath = (request) => {
+  if (request.type === 'delete') {
+    return request.relativePath;
+  }
+
+  const relativePath = String(request.relativePath || '');
+  if (request.type !== 'list' || !relativePath.startsWith(deleteRequestPrefix)) {
+    return '';
+  }
+
+  try {
+    return Buffer.from(relativePath.slice(deleteRequestPrefix.length), 'base64url').toString('utf8');
+  } catch {
+    return '';
+  }
+};
+
 const sendFileToRelay = async (state, folder, request) => {
   const { target } = resolveCloudPath(state, folder.id, request.relativePath);
   const stat = fs.statSync(target);
@@ -514,7 +532,23 @@ const deleteCloudPath = (state, folderId, relativePath = '') => {
     throw new Error('Cannot remove the vault root');
   }
 
-  const stat = fs.lstatSync(target);
+  let stat;
+  try {
+    stat = fs.lstatSync(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        name: path.basename(target),
+        relativePath: safeRelativePath.split(path.sep).join('/'),
+        type: 'folder',
+        deletedAt: now(),
+        missing: true,
+      };
+    }
+
+    throw error;
+  }
+
   const kind = stat.isDirectory() && !stat.isSymbolicLink() ? 'folder' : 'file';
   fs.rmSync(target, { recursive: kind === 'folder', force: false });
 
@@ -544,8 +578,11 @@ const handlePendingRelayRequests = async (folder) => {
     }
 
     try {
+      const deleteRelativePath = decodeDeleteRequestPath(request);
       let result;
-      if (request.type === 'download') {
+      if (deleteRelativePath) {
+        result = deleteCloudPath(ensureState(), currentFolder.id, deleteRelativePath);
+      } else if (request.type === 'download') {
         result = await sendFileToRelay(state, currentFolder, request);
       } else if (request.type === 'upload') {
         result = await receiveFileFromRelay(state, currentFolder, request);

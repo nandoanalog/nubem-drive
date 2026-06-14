@@ -776,9 +776,6 @@ const releaseRelayRequestLock = (requestId) => {
   fs.rmSync(path.join(relayLockRoot(), requestId), { recursive: true, force: true });
 };
 
-const encodeDeleteRequestPath = (relativePath) =>
-  `${deleteRequestPrefix}${Buffer.from(relativePath, 'utf8').toString('base64url')}`;
-
 const decodeDeleteRequestPath = (request) => {
   if (request.type === 'delete') {
     return request.relativePath;
@@ -1216,7 +1213,23 @@ const deleteCloudPath = (state, folderId, relativePath = '') => {
     throw new Error('Cannot remove the vault root');
   }
 
-  const stat = fs.lstatSync(target);
+  let stat;
+  try {
+    stat = fs.lstatSync(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        name: path.basename(target),
+        relativePath: safeRelativePath.split(path.sep).join('/'),
+        type: 'folder',
+        deletedAt: now(),
+        missing: true,
+      };
+    }
+
+    throw error;
+  }
+
   const kind = stat.isDirectory() && !stat.isSymbolicLink() ? 'folder' : 'file';
   fs.rmSync(target, { recursive: kind === 'folder', force: false });
 
@@ -1246,7 +1259,7 @@ const deleteVaultRelativePath = async (folderId, relativePath = '', timeoutMs = 
   return requireDeleteResult(
     state.pairing.role === 'storage'
       ? deleteCloudPath(state, folderId, safeRelativePath)
-      : await waitForVaultRequest(folderId, await createRelayRequest('list', folderId, encodeDeleteRequestPath(safeRelativePath)), timeoutMs)
+      : await waitForVaultRequest(folderId, await createRelayRequest('delete', folderId, safeRelativePath), timeoutMs)
   );
 };
 

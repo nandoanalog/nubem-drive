@@ -31,7 +31,7 @@ On Linux installs, the storage server is also installed as `nubem-drive-storage`
 
 ## Updating the Storage PC
 
-The storage PC must run the same current repo build as the Windows client. If the Windows app shows `Storage PC is offline`, `Storage PC did not respond`, or a folder remains queued, update and restart the storage service on the Linux storage PC.
+The storage PC must run the same current repo build as the Windows client. If the Windows app shows `Storage PC is offline`, `Storage PC did not respond`, a folder remains queued, or remote delete fails with a `.nubem-command/delete` path, update and restart the storage service on the Linux storage PC.
 
 ```bash
 cd ~/Documents/cloud
