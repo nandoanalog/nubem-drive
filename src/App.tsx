@@ -163,6 +163,7 @@ function App() {
   const [remoteListing, setRemoteListing] = useState<RemoteListing | null>(null)
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteError, setRemoteError] = useState('')
+  const [remoteNotice, setRemoteNotice] = useState('')
 
   const api = window.nubemDrive
 
@@ -256,9 +257,25 @@ function App() {
 
   async function chooseFolders() {
     if (!api) return
-    const nextState = await api.chooseFolders()
-    setState(nextState)
-    setSelectedId(nextState.folders[0]?.id)
+    setRemoteBusy(true)
+    setRemoteError('')
+    setRemoteNotice(selectedIsClientVault ? 'Uploading' : '')
+    try {
+      const nextState = await api.chooseFolders()
+      setState(nextState)
+      setSelectedId(nextState.folders[0]?.id)
+      if (selectedFolder && selectedIsClientVault) {
+        setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, remoteListing?.path || ''))
+        setRemoteNotice('Upload complete')
+      } else {
+        setRemoteNotice('')
+      }
+    } catch (error) {
+      setRemoteNotice('')
+      setRemoteError(error instanceof Error ? error.message : 'Could not add folder')
+    } finally {
+      setRemoteBusy(false)
+    }
   }
 
   async function removeFolder(folder: CloudFolder) {
@@ -282,6 +299,7 @@ function App() {
     if (!api || !selectedFolder) return
     setRemoteBusy(true)
     setRemoteError('')
+    setRemoteNotice('')
     try {
       setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, relativePath))
     } catch (error) {
@@ -295,6 +313,7 @@ function App() {
     if (!api || !selectedFolder || entry.type !== 'file') return
     setRemoteBusy(true)
     setRemoteError('')
+    setRemoteNotice('')
     try {
       await api.downloadRemoteFile(selectedFolder.id, entry.relativePath)
     } catch (error) {
@@ -308,6 +327,7 @@ function App() {
     if (!api || !selectedFolder) return
     setRemoteBusy(true)
     setRemoteError('')
+    setRemoteNotice('')
     try {
       const result = await api.deleteRemoteEntry(selectedFolder.id, entry.relativePath)
       if (result.ok) {
@@ -495,6 +515,7 @@ function App() {
                 busy={remoteBusy}
                 error={remoteError}
                 listing={remoteListing}
+                notice={remoteNotice}
                 onDelete={deleteRemoteEntry}
                 onDownload={downloadRemoteEntry}
                 onOpen={browseRemotePath}
@@ -617,6 +638,7 @@ function RemoteBrowser({
   busy,
   error,
   listing,
+  notice,
   onDelete,
   onDownload,
   onOpen,
@@ -624,6 +646,7 @@ function RemoteBrowser({
   busy: boolean
   error: string
   listing: RemoteListing | null
+  notice: string
   onDelete: (entry: RemoteEntry) => void
   onDownload: (entry: RemoteEntry) => void
   onOpen: (relativePath: string) => void
@@ -694,6 +717,7 @@ function RemoteBrowser({
       </nav>
 
       {error ? <div className="remote-message">{error}</div> : null}
+      {!error && notice ? <div className="remote-message">{notice}</div> : null}
       {busy ? <div className="remote-message">Loading</div> : null}
 
       <div className="remote-table">

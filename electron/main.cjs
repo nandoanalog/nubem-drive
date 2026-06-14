@@ -1140,8 +1140,17 @@ const cloudFoldersToDefaultVault = async (folderPaths) => {
 
   const folders = resolveDirectoryPaths(folderPaths);
   for (const folderPath of folders) {
-    const result = await uploadFolderToVault(vault.id, folderPath);
-    state = writeState(addActivity(ensureState(), 'upload', result.name, `${result.fileCount} files to ${vault.name}`));
+    const name = path.basename(path.resolve(folderPath)) || 'Folder';
+    state = writeState(addActivity(ensureState(), 'upload', name, `Uploading to ${vault.name}`));
+
+    try {
+      const result = await uploadFolderToVault(vault.id, folderPath);
+      state = writeState(addActivity(ensureState(), 'upload', result.name, `${result.fileCount} files to ${vault.name}`));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      state = writeState(addActivity(ensureState(), 'upload', name, message));
+      throw error;
+    }
   }
 
   return state;
