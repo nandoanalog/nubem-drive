@@ -29,6 +29,7 @@ const once = Boolean(args.once || process.env.HANDOFF_ONCE);
 
 let state = readJson(statePath, { handled: [] });
 let busy = false;
+let codexPermissionArgs = null;
 
 main().catch((error) => {
   console.error(error.stack || error.message);
@@ -51,6 +52,7 @@ async function main() {
   console.log(`repo=${repo} issue=${issue} target="${target}" workdir=${workdir}`);
   console.log(`gh=${ghBin}`);
   console.log(`codex=${codexBin}`);
+  console.log(`codex-exec-permissions=${getCodexPermissionArgs().join(' ')}`);
   console.log(`trusted-authors=${[...allowedAuthors].join(', ')}`);
   console.log(dryRun ? 'dry-run=true' : `poll=${pollMs}ms`);
 
@@ -241,10 +243,7 @@ function runCodex(handoff) {
       'exec',
       '--cd',
       workdir,
-      '--sandbox',
-      'danger-full-access',
-      '--ask-for-approval',
-      'never',
+      ...getCodexPermissionArgs(),
       '--output-last-message',
       outputPath,
       '-',
@@ -314,6 +313,31 @@ function clampComment(body) {
 
 function runGh(argsList) {
   return execFileSync(ghBin, argsList, { cwd: workdir, encoding: 'utf8' });
+}
+
+function getCodexPermissionArgs() {
+  if (codexPermissionArgs) return codexPermissionArgs;
+
+  let help = '';
+  try {
+    help = execFileSync(codexBin, ['exec', '--help'], {
+      cwd: workdir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    // Fall through to the least surprising legacy flags.
+  }
+
+  if (help.includes('--dangerously-bypass-approvals-and-sandbox')) {
+    codexPermissionArgs = ['--dangerously-bypass-approvals-and-sandbox'];
+  } else if (help.includes('--ask-for-approval')) {
+    codexPermissionArgs = ['--sandbox', 'danger-full-access', '--ask-for-approval', 'never'];
+  } else {
+    codexPermissionArgs = ['--sandbox', 'danger-full-access'];
+  }
+
+  return codexPermissionArgs;
 }
 
 function requireTool(tool) {
