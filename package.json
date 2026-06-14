@@ -15,6 +15,8 @@
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "dist:all": "npm run build && electron-builder --linux deb --win nsis --x64",
     "electron": "node scripts/start-electron.cjs",
+    "handoff:linux": "node scripts/codex-handoff-loop.cjs --target \"Linux Codex\"",
+    "handoff:windows": "node scripts/codex-handoff-loop.cjs --target \"Windows Codex\"",
     "lint": "eslint .",
     "preview": "vite preview"
   },
