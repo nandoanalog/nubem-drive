@@ -133,6 +133,12 @@ const statusIcons: Record<FolderStatus, typeof Cloud> = {
 
 const visibleUpdateStatuses = new Set(['available', 'downloading', 'ready', 'installing', 'error'])
 
+function deviceRoleLabel(role?: string) {
+  if (role === 'Storage node' || role === 'storage') return 'Server'
+  if (role === 'This PC') return 'This PC'
+  return role || 'Client'
+}
+
 function updateTitle(state: AppState) {
   const latest = state.updates.latestVersion ? ` ${state.updates.latestVersion}` : ''
   if (state.updates.status === 'ready') return `Install update${latest}`
@@ -462,7 +468,12 @@ function App() {
 
         <section className="device-summary" aria-label="Devices">
           {state.devices.map((device) => (
-            <div className="device-row compact" key={device.id} title={`${device.name} - ${device.address}`}>
+            <div
+              className="device-row compact"
+              key={device.id}
+              title={`${device.name} - ${deviceRoleLabel(device.role)}`}
+              aria-label={`${device.name} - ${deviceRoleLabel(device.role)}`}
+            >
               <Laptop size={16} />
               <span className={`device-dot ${device.status}`} />
             </div>
@@ -925,7 +936,7 @@ function PairPanel({
             </span>
           ) : (
             linkedDevices.map((device) => (
-              <span className="quiet-chip" key={device.id} title={device.address}>
+              <span className="quiet-chip" key={device.id} title={deviceRoleLabel(device.role)}>
                 <Laptop size={14} />
                 {device.name}
               </span>

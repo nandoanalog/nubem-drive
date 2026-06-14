@@ -205,7 +205,7 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
   const localDevice = {
     id: currentDevice.id,
     name: currentDevice.name,
-    role: pairing.role === 'client' ? 'Client' : 'This PC',
+    role: pairing.role === 'storage' ? 'Server' : 'Client',
     status: 'online',
     address: pairing.status === 'linked' ? 'Relay' : 'Local',
   };
@@ -321,7 +321,7 @@ const relayRequest = async (relayUrl, endpoint, body) => {
 const mapRelayDevice = (device, currentDeviceId) => ({
   id: device.id,
   name: device.name || 'Device',
-  role: device.role === 'storage' ? 'Storage node' : device.id === currentDeviceId ? 'This PC' : 'Client',
+  role: device.role === 'storage' ? 'Server' : 'Client',
   status: device.status || 'offline',
   address: device.id === currentDeviceId ? 'This PC' : 'Relay',
 });
