@@ -9,6 +9,7 @@ const stateFile = path.join(dataDir, 'state.json');
 const pairCodeTtlMs = 5 * 60 * 1000;
 const onlineWindowMs = 35 * 1000;
 const requestTtlMs = 60 * 60 * 1000;
+const uploadStallMs = 10 * 60 * 1000;
 const joinRateWindowMs = 10 * 60 * 1000;
 const joinRateLimit = 24;
 const defaultBodyLimitBytes = 512 * 1024;
@@ -90,12 +91,22 @@ const cleanFolders = (folders) =>
 
 const prunePairs = (state) => {
   const cutoff = Date.now() - requestTtlMs;
+  const uploadCutoff = Date.now() - uploadStallMs;
   const attemptCutoff = Date.now() - joinRateWindowMs;
 
   for (const pair of Object.values(state.pairs || {})) {
     for (const [requestId, request] of Object.entries(pair.requests || {})) {
       if (new Date(request.createdAt || 0).getTime() < cutoff) {
         delete pair.requests[requestId];
+        fs.rmSync(path.join(dataDir, 'chunks', requestId), { recursive: true, force: true });
+        continue;
+      }
+
+      const updatedAt = new Date(request.updatedAt || request.createdAt || 0).getTime();
+      if (request.status === 'uploading' && updatedAt < uploadCutoff) {
+        request.status = 'error';
+        request.error = 'Upload interrupted';
+        request.updatedAt = now();
         fs.rmSync(path.join(dataDir, 'chunks', requestId), { recursive: true, force: true });
       }
     }
@@ -434,8 +445,44 @@ const handlers = {
       return { status: 403, payload: { ok: false, error: 'Not your request' } };
     }
 
+    for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
+      if (!fs.existsSync(chunkPath(request.id, index))) {
+        request.status = 'error';
+        request.error = 'Upload incomplete';
+        request.updatedAt = now();
+        writeState(state);
+        return { status: 400, payload: { ok: false, error: 'Upload incomplete' } };
+      }
+    }
+
     request.status = 'pending';
     request.updatedAt = now();
+    writeState(state);
+
+    return { ok: true };
+  },
+
+  'POST /api/drive/requests/fail': async (body) => {
+    const state = readState();
+    const pair = verifyPair(state, body.pairId, body.token);
+
+    if (!pair) {
+      return { status: 401, payload: { ok: false, error: 'Not linked' } };
+    }
+
+    const request = pair.requests?.[body.requestId];
+    if (!request || request.type !== 'upload') {
+      return { status: 404, payload: { ok: false, error: 'Request expired' } };
+    }
+
+    if (request.requesterId !== tokenDeviceId(pair, body.token)) {
+      return { status: 403, payload: { ok: false, error: 'Not your request' } };
+    }
+
+    request.status = 'error';
+    request.error = String(body.error || 'Upload failed').slice(0, 500);
+    request.updatedAt = now();
+    fs.rmSync(chunkDir(request.id), { recursive: true, force: true });
     writeState(state);
 
     return { ok: true };
@@ -474,6 +521,9 @@ const handlers = {
     request.error = body.error ? String(body.error).slice(0, 500) : '';
     request.result = body.result || null;
     request.updatedAt = now();
+    if (body.error) {
+      fs.rmSync(chunkDir(request.id), { recursive: true, force: true });
+    }
     writeState(state);
 
     return { ok: true };
@@ -513,7 +563,7 @@ const handlers = {
       return { status: 404, payload: { ok: false, error: 'Request expired' } };
     }
 
-    if (body.data) {
+    if (Object.prototype.hasOwnProperty.call(body, 'data')) {
       const requesterId = tokenDeviceId(pair, body.token);
       const canWriteDownloadChunk = request.type === 'download' && tokenRole(pair, body.token) === 'storage';
       const canWriteUploadChunk = request.type === 'upload' && request.requesterId === requesterId;
@@ -524,6 +574,8 @@ const handlers = {
 
       fs.mkdirSync(chunkDir(request.id), { recursive: true });
       fs.writeFileSync(chunkPath(request.id, Number(body.index || 0)), String(body.data));
+      request.updatedAt = now();
+      writeState(state);
       return { ok: true };
     }
 

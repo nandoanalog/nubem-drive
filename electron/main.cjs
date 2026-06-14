@@ -772,6 +772,16 @@ const markUploadReady = async (folderId, requestId) => {
   });
 };
 
+const failUploadRequest = async (folderId, requestId, error) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  return relayRequest(relayUrl, '/api/drive/requests/fail', {
+    pairId,
+    token,
+    requestId,
+    error,
+  });
+};
+
 const downloadRelayChunk = async (folderId, requestId, index) => {
   const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   return relayRequest(relayUrl, '/api/drive/requests/chunk', {
@@ -968,13 +978,16 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath) 
   const stat = fs.statSync(sourceFile);
   const chunkSize = 768 * 1024;
   const chunkCount = Math.max(1, Math.ceil(stat.size / chunkSize));
-  const requestId = await createUploadRequest(vaultFolderId, targetRelativePath, path.basename(sourceFile), stat.size, chunkCount);
-  const file = fs.openSync(sourceFile, 'r');
+  let requestId = '';
+  let file;
   const buffer = Buffer.alloc(chunkSize);
   let index = 0;
   let offset = 0;
 
   try {
+    file = fs.openSync(sourceFile, 'r');
+    requestId = await createUploadRequest(vaultFolderId, targetRelativePath, path.basename(sourceFile), stat.size, chunkCount);
+
     if (stat.size === 0) {
       await uploadRelayChunk(vaultFolderId, requestId, 0, Buffer.alloc(0).toString('base64'));
     }
@@ -986,12 +999,21 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath) 
       offset += bytesRead;
       index += 1;
     }
-  } finally {
-    fs.closeSync(file);
-  }
 
-  await markUploadReady(vaultFolderId, requestId);
-  return waitForVaultRequest(vaultFolderId, requestId, 15 * 60 * 1000);
+    await markUploadReady(vaultFolderId, requestId);
+    return await waitForVaultRequest(vaultFolderId, requestId, 15 * 60 * 1000);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Upload failed';
+    if (requestId) {
+      await failUploadRequest(vaultFolderId, requestId, message).catch(() => undefined);
+    }
+
+    throw new Error(`${path.basename(sourceFile)}: ${message}`);
+  } finally {
+    if (file !== undefined) {
+      fs.closeSync(file);
+    }
+  }
 };
 
 const uploadFolderToVault = async (vaultFolderId, folderPath) => {
@@ -1369,6 +1391,15 @@ const notifyClouded = (added) => {
   new Notification({ title: 'Nubem Drive', body }).show();
 };
 
+const notifyCloudUploadStarted = (folders) => {
+  if (!Notification.isSupported()) {
+    return;
+  }
+
+  const body = folders.length === 1 ? `Uploading ${folders[0].name}` : `Uploading ${folders.length} folders`;
+  new Notification({ title: 'Nubem Drive', body }).show();
+};
+
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     return mainWindow;
@@ -1418,9 +1449,12 @@ const focusMainWindow = () => {
 const cloudFoldersAndNotify = async (folderPaths) => {
   const state = ensureState();
   if (findDefaultClientVault(state)) {
+    const folders = resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
+    notifyCloudUploadStarted(folders);
+
     try {
       await cloudFoldersToDefaultVault(folderPaths);
-      notifyClouded(resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath })));
+      notifyClouded(folders);
     } catch (error) {
       if (Notification.isSupported()) {
         new Notification({ title: 'Nubem Drive', body: error instanceof Error ? error.message : 'Upload failed' }).show();
