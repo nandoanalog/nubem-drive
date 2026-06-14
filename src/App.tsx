@@ -883,48 +883,45 @@ function PairPanel({
         </div>
       </div>
 
-      <div className="pair-grid">
-        <div className="pair-card">
-          <HardDrive size={19} />
-          <strong>Vault</strong>
-          <button
-            className="primary-button"
-            disabled={busy === 'code' || !isServer}
-            onClick={onCreateCode}
-            title={isServer ? undefined : 'Set this PC as server'}
-          >
-            {busy === 'code' ? '...' : selectedFolder?.code ? 'Copy code' : 'Show code'}
-          </button>
-          {selectedFolder?.code ? (
-            <button
-              className="pair-code"
-              onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}
-              title="Copy code"
-            >
-              {formatPairCode(selectedFolder.code)}
+      <div className="pair-grid single">
+        {isServer ? (
+          <div className="pair-card">
+            <HardDrive size={19} />
+            <strong>Vault</strong>
+            <button className="primary-button" disabled={busy === 'code'} onClick={onCreateCode}>
+              {busy === 'code' ? '...' : selectedFolder?.code ? 'Copy code' : 'Show code'}
             </button>
-          ) : null}
-        </div>
-
-        <form className="pair-card pair-form" onSubmit={onJoin}>
-          <Laptop size={19} />
-          <strong>Join</strong>
-          <label>
-            <span>Code</span>
-            <input
-              autoCapitalize="characters"
-              inputMode="text"
-              maxLength={14}
-              spellCheck={false}
-              value={pairCode}
-              onChange={(event) => setPairCode(formatPairCode(event.target.value))}
-              placeholder="ABCD-2345-WXYZ"
-            />
-          </label>
-          <button className="primary-button" disabled={busy === 'join'} type="submit">
-            {busy === 'join' ? '...' : 'Join'}
-          </button>
-        </form>
+            {selectedFolder?.code ? (
+              <button
+                className="pair-code"
+                onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}
+                title="Copy code"
+              >
+                {formatPairCode(selectedFolder.code)}
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <form className="pair-card pair-form" onSubmit={onJoin}>
+            <Laptop size={19} />
+            <strong>Join</strong>
+            <label>
+              <span>Code</span>
+              <input
+                autoCapitalize="characters"
+                inputMode="text"
+                maxLength={14}
+                spellCheck={false}
+                value={pairCode}
+                onChange={(event) => setPairCode(formatPairCode(event.target.value))}
+                placeholder="ABCD-2345-WXYZ"
+              />
+            </label>
+            <button className="primary-button" disabled={busy === 'join'} type="submit">
+              {busy === 'join' ? '...' : 'Join'}
+            </button>
+          </form>
+        )}
       </div>
 
       <div className="pair-footer">
