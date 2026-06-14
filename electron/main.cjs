@@ -1197,6 +1197,20 @@ const requireDeleteResult = (result) => {
   throw new Error('Storage PC needs the latest Nubem Drive to delete from vault');
 };
 
+const deleteVaultRelativePath = async (folderId, relativePath = '', timeoutMs = 15 * 60 * 1000) => {
+  const safeRelativePath = validateRelativePath(relativePath).split(path.sep).join('/');
+  if (!safeRelativePath) {
+    throw new Error('Select a file or folder');
+  }
+
+  const state = ensureState();
+  return requireDeleteResult(
+    state.pairing.role === 'storage'
+      ? deleteCloudPath(state, folderId, safeRelativePath)
+      : await waitForVaultRequest(folderId, await createRelayRequest('list', folderId, encodeDeleteRequestPath(safeRelativePath)), timeoutMs)
+  );
+};
+
 const deleteRemoteEntry = async (folderId, relativePath = '') => {
   const safeRelativePath = validateRelativePath(relativePath).split(path.sep).join('/');
   if (!safeRelativePath) {
@@ -1218,13 +1232,7 @@ const deleteRemoteEntry = async (folderId, relativePath = '') => {
     return { ok: false, canceled: true };
   }
 
-  const state = ensureState();
-  const deleteResult = requireDeleteResult(
-    state.pairing.role === 'storage'
-      ? deleteCloudPath(state, folderId, safeRelativePath)
-      : await waitForVaultRequest(folderId, await createRelayRequest('list', folderId, encodeDeleteRequestPath(safeRelativePath)), 15 * 60 * 1000)
-  );
-
+  const deleteResult = await deleteVaultRelativePath(folderId, safeRelativePath);
   writeState(addActivity(ensureState(), 'remove', deleteResult.name || name, 'Deleted from vault'));
   return { ok: true, deleted: deleteResult };
 };
@@ -1652,6 +1660,62 @@ const cloudFoldersToDefaultVault = async (folderPaths) => {
   return state;
 };
 
+const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
+  let state = ensureState();
+  const vault = findDefaultClientVault(state);
+
+  if (!vault) {
+    focusMainWindow();
+    throw new Error('Join a vault first');
+  }
+
+  const roots = resolveDirectoryPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
+  const matches = state.syncJobs.filter(
+    (job) => job.vaultFolderId === vault.id && roots.includes(path.resolve(job.rootPath))
+  );
+
+  if (matches.length === 0) {
+    throw new Error('Folder is not clouded');
+  }
+
+  const uniqueRoots = Array.from(new Map(matches.map((job) => [job.rootName, job])).values());
+  const label = uniqueRoots.length === 1 ? uniqueRoots[0].rootName : `${uniqueRoots.length} folders`;
+  const result = await dialog.showMessageBox(createWindow(), {
+    type: 'warning',
+    buttons: ['Remove', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Remove from cloud',
+    message: `Remove "${label}" from the vault?`,
+    detail: 'Files stay on this computer. The cloud copy is removed from the storage PC for paired devices.',
+  });
+
+  if (result.response !== 0) {
+    return ensureState();
+  }
+
+  for (const job of uniqueRoots) {
+    await deleteVaultRelativePath(vault.id, job.rootName, 120_000);
+  }
+
+  state = ensureState();
+  const removedJobIds = new Set(matches.map((job) => job.id));
+  const nextState = addActivity(
+    applyVaultSyncStatus(
+      {
+        ...state,
+        syncJobs: state.syncJobs.filter((job) => !removedJobIds.has(job.id)),
+      },
+      vault.id
+    ),
+    'remove',
+    label,
+    'Removed from cloud'
+  );
+
+  return writeState(nextState);
+};
+
 const compareVersions = (left, right) => {
   const leftParts = String(left || '0').split('.').map((part) => Number.parseInt(part, 10) || 0);
   const rightParts = String(right || '0').split('.').map((part) => Number.parseInt(part, 10) || 0);
@@ -2004,8 +2068,7 @@ const addVaultsFromPaths = async (folderPaths, detail = 'Vault added') => {
   return { state, added: result.added };
 };
 
-const getCloudFolderArgs = (argv = process.argv) => {
-  const prefix = 'nubem-cloud-folder:';
+const getFolderArgs = (argv = process.argv, prefix, marker) => {
   const prefixed = argv
     .filter((item) => typeof item === 'string' && item.startsWith(prefix))
     .map((item) => item.slice(prefix.length))
@@ -2015,13 +2078,17 @@ const getCloudFolderArgs = (argv = process.argv) => {
     return prefixed;
   }
 
-  const marker = argv.indexOf('--cloud-folder');
-  if (marker === -1) {
+  const markerIndex = argv.indexOf(marker);
+  if (markerIndex === -1) {
     return [];
   }
 
-  return argv.slice(marker + 1).filter((item) => item && !item.startsWith('--'));
+  return argv.slice(markerIndex + 1).filter((item) => item && !item.startsWith('--'));
 };
+
+const getCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-cloud-folder:', '--cloud-folder');
+
+const getRemoveCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-remove-folder:', '--remove-cloud-folder');
 
 const notifyClouded = (added) => {
   if (!Notification.isSupported()) {
@@ -2038,6 +2105,24 @@ const notifyCloudUploadStarted = (folders) => {
   }
 
   const body = folders.length === 1 ? `Queuing ${folders[0].name}` : `Queuing ${folders.length} folders`;
+  new Notification({ title: 'Nubem Drive', body }).show();
+};
+
+const notifyCloudRemoveStarted = (folders) => {
+  if (!Notification.isSupported()) {
+    return;
+  }
+
+  const body = folders.length === 1 ? `Removing ${folders[0].name}` : `Removing ${folders.length} folders`;
+  new Notification({ title: 'Nubem Drive', body }).show();
+};
+
+const notifyCloudRemoved = (folders) => {
+  if (!Notification.isSupported()) {
+    return;
+  }
+
+  const body = folders.length === 1 ? `${folders[0].name} removed` : `${folders.length} folders removed`;
   new Notification({ title: 'Nubem Drive', body }).show();
 };
 
@@ -2123,6 +2208,24 @@ const cloudFoldersAndNotify = async (folderPaths) => {
   }
 };
 
+const removeCloudFoldersAndNotify = async (folderPaths) => {
+  const folders = resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
+  if (folders.length === 0) {
+    notifyCloudError('Select a folder to remove');
+    return;
+  }
+
+  focusMainWindow();
+  notifyCloudRemoveStarted(folders);
+
+  try {
+    await removeCloudFoldersFromDefaultVault(folderPaths);
+    notifyCloudRemoved(folders);
+  } catch (error) {
+    notifyCloudError(error instanceof Error ? error.message : 'Could not remove from cloud');
+  }
+};
+
 const singleInstanceLock = app.requestSingleInstanceLock();
 
 if (!singleInstanceLock) {
@@ -2130,8 +2233,15 @@ if (!singleInstanceLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const cloudFolderArgs = getCloudFolderArgs(argv);
+    const removeCloudFolderArgs = getRemoveCloudFolderArgs(argv);
 
     app.whenReady().then(async () => {
+      if (removeCloudFolderArgs.length > 0) {
+        await removeCloudFoldersAndNotify(removeCloudFolderArgs);
+        focusMainWindow();
+        return;
+      }
+
       if (cloudFolderArgs.length > 0) {
         await cloudFoldersAndNotify(cloudFolderArgs);
         focusMainWindow();
@@ -2149,6 +2259,7 @@ app.whenReady().then(async () => {
   }
 
   const startupCloudFolderArgs = getCloudFolderArgs();
+  const startupRemoveCloudFolderArgs = getRemoveCloudFolderArgs();
 
   ipcMain.handle('app:get-state', () => {
     refreshPairingState().catch(() => undefined);
@@ -2284,6 +2395,11 @@ app.whenReady().then(async () => {
   scheduleUpdateChecks();
   startSyncProcessor();
   createWindow();
+
+  if (startupRemoveCloudFolderArgs.length > 0) {
+    await removeCloudFoldersAndNotify(startupRemoveCloudFolderArgs);
+    focusMainWindow();
+  }
 
   if (startupCloudFolderArgs.length > 0) {
     await cloudFoldersAndNotify(startupCloudFolderArgs);
