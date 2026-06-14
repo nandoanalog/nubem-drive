@@ -430,7 +430,7 @@ button:disabled {
 
 .pair-form {
   display: grid;
-  grid-template-columns: auto minmax(58px, auto) minmax(140px, 1fr) 94px auto;
+  grid-template-columns: auto minmax(58px, auto) minmax(180px, 1fr) 94px;
   align-items: end;
 }
 

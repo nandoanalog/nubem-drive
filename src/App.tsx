@@ -174,7 +174,6 @@ function App() {
   const [filter, setFilter] = useState<FilterKey>('all')
   const [isLoading, setIsLoading] = useState(true)
   const [isPairPanelOpen, setIsPairPanelOpen] = useState(false)
-  const [relayHost, setRelayHost] = useState(defaultRelayHost)
   const [pairCode, setPairCode] = useState('')
   const [pairBusy, setPairBusy] = useState<PairBusy>(null)
   const [pairError, setPairError] = useState('')
@@ -194,7 +193,6 @@ function App() {
         if (!active) return
 
         setState(nextState)
-        setRelayHost((currentHost) => currentHost || nextState.pairing.relayUrl || defaultRelayHost)
         setSelectedId((currentId) => {
           if (currentId && nextState.folders.some((folder) => folder.id === currentId)) {
             return currentId
@@ -376,7 +374,7 @@ function App() {
     setPairBusy('code')
     setPairError('')
     try {
-      const nextState = await api.shareVault(selectedFolder.id, relayHost)
+      const nextState = await api.shareVault(selectedFolder.id, defaultRelayHost)
       setState(nextState)
     } catch (error) {
       setPairError(error instanceof Error ? error.message : 'Could not create code')
@@ -391,7 +389,7 @@ function App() {
     setPairBusy('join')
     setPairError('')
     try {
-      const nextState = await api.joinPairing(relayHost, pairCode)
+      const nextState = await api.joinPairing(defaultRelayHost, pairCode)
       setState(nextState)
       setPairCode('')
     } catch (error) {
@@ -532,9 +530,7 @@ function App() {
             onReset={resetPairing}
             onSetServerMode={setServerMode}
             pairCode={pairCode}
-            relayHost={relayHost}
             setPairCode={setPairCode}
-            setRelayHost={setRelayHost}
             selectedFolder={selectedFolder}
             state={state}
           />
@@ -830,9 +826,7 @@ function PairPanel({
   onReset,
   onSetServerMode,
   pairCode,
-  relayHost,
   setPairCode,
-  setRelayHost,
   selectedFolder,
   state,
 }: {
@@ -844,9 +838,7 @@ function PairPanel({
   onReset: () => void
   onSetServerMode: (enabled: boolean) => void
   pairCode: string
-  relayHost: string
   setPairCode: (value: string) => void
-  setRelayHost: (value: string) => void
   selectedFolder?: CloudFolder
   state: AppState
 }) {
@@ -906,10 +898,6 @@ function PairPanel({
         <form className="pair-card pair-form" onSubmit={onJoin}>
           <Laptop size={19} />
           <strong>Join</strong>
-          <label>
-            <span>Host</span>
-            <input value={relayHost} onChange={(event) => setRelayHost(event.target.value)} placeholder={defaultRelayHost} />
-          </label>
           <label>
             <span>Code</span>
             <input
