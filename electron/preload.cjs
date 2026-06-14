@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('nubemDrive', {
   shareVault: (id, relayUrl) => ipcRenderer.invoke('vaults:share', id, relayUrl),
   refreshPairing: () => ipcRenderer.invoke('pairing:refresh'),
   resetPairing: () => ipcRenderer.invoke('pairing:reset'),
+  setServerMode: (enabled) => ipcRenderer.invoke('server:set-mode', enabled),
   browseRemoteFolder: (folderId, relativePath) => ipcRenderer.invoke('remote:browse', folderId, relativePath),
   downloadRemoteFile: (folderId, relativePath) => ipcRenderer.invoke('remote:download', folderId, relativePath),
   deleteRemoteEntry: (folderId, relativePath) => ipcRenderer.invoke('remote:delete', folderId, relativePath),

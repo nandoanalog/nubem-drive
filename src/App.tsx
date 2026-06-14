@@ -28,7 +28,7 @@ import './App.css'
 import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
-type PairBusy = 'code' | 'join' | 'reset' | null
+type PairBusy = 'code' | 'join' | 'reset' | 'server' | null
 type RemoteSortKey = 'name' | 'modified' | 'size'
 type SortDirection = 'asc' | 'desc'
 
@@ -49,7 +49,7 @@ const demoState: AppState = {
   },
   pairing: {
     relayUrl: `https://${defaultRelayHost}`,
-    role: null,
+    role: 'client',
     status: 'idle',
   },
   updates: {
@@ -59,7 +59,7 @@ const demoState: AppState = {
   },
   folders: [],
   devices: [
-    { id: 'demo-device', name: 'This PC', role: 'This PC', status: 'online', address: 'Local' },
+    { id: 'demo-device', name: 'This PC', role: 'Client', status: 'online', address: 'Local' },
   ],
   syncJobs: [],
   activity: [],
@@ -104,9 +104,8 @@ function pairingLine(state: AppState) {
 
 function roleBadge(state: AppState) {
   const hasClientVault = state.folders.some((folder) => folder.vaultRole === 'client')
-  const hasStorageVault = state.folders.some((folder) => folder.vaultRole !== 'client')
-  const isServer = state.storageNode.status === 'online' || hasStorageVault || state.pairing.role === 'storage'
-  const isClient = hasClientVault || state.pairing.role === 'client'
+  const isServer = state.storageNode.status === 'online' || state.pairing.role === 'storage'
+  const isClient = hasClientVault || state.pairing.role !== 'storage'
 
   if (isServer && isClient) {
     return { label: 'Both', title: 'Server and client', className: 'both' }
@@ -120,7 +119,7 @@ function roleBadge(state: AppState) {
     return { label: 'Client', title: 'Client PC', className: 'client' }
   }
 
-  return { label: 'Setup', title: 'No role yet', className: 'setup' }
+  return { label: 'Client', title: 'Client PC', className: 'client' }
 }
 
 const statusIcons: Record<FolderStatus, typeof Cloud> = {
@@ -361,6 +360,10 @@ function App() {
 
   async function createPairCode() {
     if (!api) return
+    if (state.storageNode.status !== 'online' && state.pairing.role !== 'storage') {
+      setPairError('Set this PC as server')
+      return
+    }
     if (!selectedFolder || selectedFolder.vaultRole === 'client') {
       setPairError('Select a vault')
       return
@@ -406,6 +409,19 @@ function App() {
       setState(await api.resetPairing())
     } catch (error) {
       setPairError(error instanceof Error ? error.message : 'Could not reset')
+    } finally {
+      setPairBusy(null)
+    }
+  }
+
+  async function setServerMode(enabled: boolean) {
+    if (!api) return
+    setPairBusy('server')
+    setPairError('')
+    try {
+      setState(await api.setServerMode(enabled))
+    } catch (error) {
+      setPairError(error instanceof Error ? error.message : 'Could not change role')
     } finally {
       setPairBusy(null)
     }
@@ -514,6 +530,7 @@ function App() {
             onCreateCode={createPairCode}
             onJoin={joinPairing}
             onReset={resetPairing}
+            onSetServerMode={setServerMode}
             pairCode={pairCode}
             relayHost={relayHost}
             setPairCode={setPairCode}
@@ -811,6 +828,7 @@ function PairPanel({
   onCreateCode,
   onJoin,
   onReset,
+  onSetServerMode,
   pairCode,
   relayHost,
   setPairCode,
@@ -824,6 +842,7 @@ function PairPanel({
   onCreateCode: () => void
   onJoin: (event: FormEvent) => void
   onReset: () => void
+  onSetServerMode: (enabled: boolean) => void
   pairCode: string
   relayHost: string
   setPairCode: (value: string) => void
@@ -833,6 +852,9 @@ function PairPanel({
 }) {
   const pairingMessage = error || state.pairing.message
   const linkedDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
+  const isServer = state.storageNode.status === 'online' || state.pairing.role === 'storage'
+  const canSetServer = state.currentDevice.platform === 'linux'
+  const serverButtonLabel = isServer ? 'Use as client' : 'Set this PC as server'
 
   return (
     <section className="pair-panel" aria-label="Link devices">
@@ -841,16 +863,33 @@ function PairPanel({
           <strong>Link</strong>
           <span>{pairingLine(state)}</span>
         </div>
-        <button className="icon-button compact" onClick={onClose} title="Close" aria-label="Close">
-          <X size={17} />
-        </button>
+        <div className="pair-panel-actions">
+          <button
+            className={`server-toggle ${isServer ? 'is-server' : ''}`}
+            disabled={busy === 'server' || !canSetServer}
+            onClick={() => onSetServerMode(!isServer)}
+            title={canSetServer ? serverButtonLabel : 'Server mode is available on Linux'}
+            type="button"
+          >
+            <HardDrive size={16} />
+            <span>{busy === 'server' ? '...' : serverButtonLabel}</span>
+          </button>
+          <button className="icon-button compact" onClick={onClose} title="Close" aria-label="Close">
+            <X size={17} />
+          </button>
+        </div>
       </div>
 
       <div className="pair-grid">
         <div className="pair-card">
           <HardDrive size={19} />
           <strong>Vault</strong>
-          <button className="primary-button" disabled={busy === 'code'} onClick={onCreateCode}>
+          <button
+            className="primary-button"
+            disabled={busy === 'code' || !isServer}
+            onClick={onCreateCode}
+            title={isServer ? undefined : 'Set this PC as server'}
+          >
             {busy === 'code' ? '...' : selectedFolder?.code ? 'Copy code' : 'Show code'}
           </button>
           {selectedFolder?.code ? (

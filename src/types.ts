@@ -165,6 +165,7 @@ export type NubemDriveApi = {
   shareVault: (id: string, relayUrl: string) => Promise<AppState>
   refreshPairing: () => Promise<AppState>
   resetPairing: () => Promise<AppState>
+  setServerMode: (enabled: boolean) => Promise<AppState>
   browseRemoteFolder: (folderId: string, relativePath: string) => Promise<RemoteListing>
   downloadRemoteFile: (folderId: string, relativePath: string) => Promise<RemoteDownloadResult>
   deleteRemoteEntry: (folderId: string, relativePath: string) => Promise<RemoteDeleteResult>

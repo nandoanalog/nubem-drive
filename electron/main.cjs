@@ -55,7 +55,7 @@ const makeInitialState = () => {
     storageNode: {
       name: `${os.hostname()} storage`,
       path: path.join(os.homedir(), 'Nubem Storage'),
-      status: 'online',
+      status: 'offline',
       relayStatus: 'offline',
     },
     currentDevice: {
@@ -66,7 +66,7 @@ const makeInitialState = () => {
     },
     pairing: {
       relayUrl: defaultRelayUrl,
-      role: null,
+      role: 'client',
       status: 'idle',
     },
     folders: [],
@@ -74,7 +74,7 @@ const makeInitialState = () => {
     activity: [],
     updates: updateDefaults(),
     devices: [
-      { id: deviceId, name: os.hostname(), role: 'This PC', status: 'online', address: 'Local' },
+      { id: deviceId, name: os.hostname(), role: 'Client', status: 'online', address: 'Local' },
     ],
   };
 };
@@ -117,6 +117,22 @@ const storageServiceStatus = () => {
   } catch {
     storageServiceStatusCache = { checkedAt: Date.now(), value: 'offline' };
     return 'offline';
+  }
+};
+
+const runUserSystemctl = (args) => {
+  if (process.platform !== 'linux') {
+    throw new Error('Server mode is available on Linux');
+  }
+
+  const result = spawnSync('systemctl', ['--user', ...args], {
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || 'Server mode failed').trim();
+    throw new Error(detail);
   }
 };
 
@@ -634,13 +650,48 @@ const resetPairing = () => {
         ...state,
         pairing: {
           relayUrl: state.pairing.relayUrl || defaultRelayUrl,
-          role: null,
+          role: 'client',
           status: 'idle',
         },
       },
       'link',
       'Link reset',
       'Ready'
+    )
+  );
+};
+
+const setServerMode = async (enabled) => {
+  runUserSystemctl(['daemon-reload']);
+  runUserSystemctl([enabled ? 'enable' : 'disable', '--now', 'nubem-drive-storage.service']);
+  storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
+
+  const state = ensureState();
+  const relayUrl = state.pairing.relayUrl || defaultRelayUrl;
+  const pairing = enabled
+    ? {
+        relayUrl,
+        role: 'storage',
+        status: 'idle',
+        storageName: state.currentDevice.name,
+        message: '',
+      }
+    : {
+        relayUrl,
+        role: 'client',
+        status: 'idle',
+        message: '',
+      };
+
+  return writeState(
+    addActivity(
+      {
+        ...state,
+        pairing,
+      },
+      'link',
+      enabled ? 'Server mode' : 'Client mode',
+      enabled ? 'On' : 'Off'
     )
   );
 };
@@ -2216,6 +2267,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('vaults:share', (_event, id, relayUrl) => shareVault(id, relayUrl));
   ipcMain.handle('pairing:refresh', () => refreshPairingState());
   ipcMain.handle('pairing:reset', () => resetPairing());
+  ipcMain.handle('server:set-mode', (_event, enabled) => setServerMode(Boolean(enabled)));
   ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));
   ipcMain.handle('remote:download', (_event, folderId, relativePath) => downloadRemoteFile(folderId, relativePath));
   ipcMain.handle('remote:delete', (_event, folderId, relativePath) => deleteRemoteEntry(folderId, relativePath));
