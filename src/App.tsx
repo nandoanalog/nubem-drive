@@ -377,10 +377,14 @@ function App() {
     try {
       const nextState = await api.chooseFolders()
       setState(nextState)
-      setSelectedId(nextState.folders[0]?.id)
+      setSelectedId((currentId) => {
+        if (selectedIsClientVault && selectedFolder) return selectedFolder.id
+        if (currentId && nextState.folders.some((folder) => folder.id === currentId)) return currentId
+        return nextState.folders[0]?.id
+      })
       if (selectedFolder && selectedIsClientVault) {
         setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, remoteListing?.path || ''))
-        setRemoteNotice('Upload complete')
+        setRemoteNotice('Queued for Nubem')
       } else {
         setRemoteNotice('')
       }
@@ -615,16 +619,14 @@ function App() {
                 )}
               </button>
             ) : null}
-            {!selectedIsClientVault ? (
-              <button
-                className="primary-button icon-only"
-                onClick={chooseFolders}
-                title="Add vault"
-                aria-label="Add vault"
-              >
-                <Plus size={18} />
-              </button>
-            ) : null}
+            <button
+              className="primary-button icon-only"
+              onClick={chooseFolders}
+              title={selectedIsClientVault ? 'Add to Nubem' : 'Add vault'}
+              aria-label={selectedIsClientVault ? 'Add to Nubem' : 'Add vault'}
+            >
+              <Plus size={18} />
+            </button>
           </div>
         </header>
 
@@ -750,6 +752,15 @@ function App() {
                 </div>
 
                 {selectedIsClientVault ? <SyncProgressPanel jobs={selectedSyncJobs} /> : null}
+
+                {selectedIsClientVault ? (
+                  <section className="control-section" aria-label="Nubem upload">
+                    <button className="primary-button full-width" onClick={chooseFolders}>
+                      <Plus size={17} />
+                      Add to Nubem
+                    </button>
+                  </section>
+                ) : null}
 
                 {selectedFolder.code && !selectedIsClientVault ? <button className="vault-code" onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}>{selectedFolder.code}</button> : null}
 

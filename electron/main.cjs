@@ -232,6 +232,23 @@ const dedupeFolders = (folders) => {
   return next;
 };
 
+const keepSingleClientVault = (folders, pairing = {}) => {
+  const clientFolders = folders.filter((folder) => folder.vaultRole === 'client');
+  if (clientFolders.length <= 1) {
+    return folders;
+  }
+
+  const preferred =
+    clientFolders.find((folder) => folder.pairId && folder.pairId === pairing.pairId) ||
+    clientFolders.slice().sort((left, right) => folderTimestamp(right) - folderTimestamp(left))[0];
+  const preferredKey = folderDedupeKey(preferred);
+
+  return folders.filter((folder) => {
+    if (folder.vaultRole !== 'client') return true;
+    return folder === preferred || folderDedupeKey(folder) === preferredKey;
+  });
+};
+
 const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
   const fresh = makeInitialState();
   const state = rawState && typeof rawState === 'object' ? rawState : {};
@@ -252,13 +269,13 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
 
   pairing.relayUrl = normalizeRelayUrl(pairing.relayUrl);
 
-  let folders = dedupeFolders(Array.isArray(state.folders)
+  let folders = keepSingleClientVault(dedupeFolders(Array.isArray(state.folders)
     ? state.folders.map((folder) => ({
         ...folder,
         vaultRole: folder.vaultRole || (folder.pairId && pairing.role === 'client' ? 'client' : 'storage'),
         relayUrl: normalizeRelayUrl(folder.relayUrl || pairing.relayUrl || defaultRelayUrl),
       }))
-    : []);
+    : []), pairing);
 
   let defaultClientVault = folders.find((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
   if (defaultClientVault && (!pairing.pairId || !pairing.token)) {
@@ -287,6 +304,10 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
     }
   }
 
+  folders = keepSingleClientVault(dedupeFolders(folders), pairing);
+  const validFolderIds = new Set(folders.map((folder) => folder.id).filter(Boolean));
+  const syncJobs = normalizeSyncJobs(state.syncJobs).filter((job) => validFolderIds.has(job.vaultFolderId));
+
   const localDevice = {
     id: currentDevice.id,
     name: currentDevice.name,
@@ -308,7 +329,7 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
     currentDevice,
     pairing,
     folders,
-    syncJobs: normalizeSyncJobs(state.syncJobs),
+    syncJobs,
     activity: Array.isArray(state.activity) ? state.activity : [],
     updates: updateDefaults(state.updates, { restoreTransient: restoreUpdates }),
     devices: [localDevice, ...devices],
@@ -510,7 +531,7 @@ const mergeClientRemoteFolders = (state, payload) => {
     return null;
   }
 
-  return dedupeFolders(remoteFolders.map((remoteFolder) => {
+  return keepSingleClientVault(dedupeFolders(remoteFolders.map((remoteFolder) => {
     const remotePath = remoteFolder.path || remoteFolder.name;
     const existing = state.folders.find((folder) => {
       if (folder.id === remoteFolder.id) return true;
@@ -527,7 +548,7 @@ const mergeClientRemoteFolders = (state, payload) => {
       token: existing?.token || state.pairing.token,
       storageName: remoteFolder.storageName || payload.storageName || existing?.storageName,
     };
-  }));
+  })), state.pairing);
 };
 
 const applyRelaySnapshot = (state, payload, status = 'linked') => {
@@ -773,16 +794,14 @@ const joinPairing = async (relayUrl, code) => {
   const nextState = addActivity(
     {
       ...state,
-      folders: dedupeFolders([
+      folders: keepSingleClientVault(dedupeFolders([
         joinedVault,
         ...state.folders.filter((folder) => {
-          if (folder.pairId === payload.pairId || folder.id === folderId) return false;
-          if (folder.vaultRole !== 'client') return true;
-          const sameStorage = folder.storageName && payload.storageName && folder.storageName === payload.storageName;
-          const samePath = (folder.path || folder.name) === (joinedVault.path || joinedVault.name);
-          return !(sameStorage && samePath);
+          if (folder.vaultRole === 'client') return false;
+          return folder.pairId !== payload.pairId && folder.id !== folderId;
         }),
-      ]),
+      ]), { pairId: payload.pairId }),
+      syncJobs: state.syncJobs.filter((job) => job.vaultFolderId === folderId),
       pairing: {
         relayUrl: nextRelayUrl,
         role: state.pairing.role || 'client',
@@ -1664,8 +1683,8 @@ const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
   );
   const jobs = [];
 
-  for (const folderPath of resolveDirectoryPaths(folderPaths)) {
-    const root = path.resolve(folderPath);
+  for (const sourcePath of resolveUploadPaths(folderPaths)) {
+    const root = path.resolve(sourcePath);
     const key = `${vaultFolderId}:${root}`;
     if (existingKeys.has(key)) {
       continue;
@@ -2285,6 +2304,18 @@ const resolveDirectoryPaths = (paths) =>
       }
     });
 
+const resolveUploadPaths = (paths) =>
+  paths
+    .map((sourcePath) => path.resolve(sourcePath))
+    .filter((sourcePath) => {
+      try {
+        const stat = fs.statSync(sourcePath);
+        return stat.isDirectory() || stat.isFile();
+      } catch {
+        return false;
+      }
+    });
+
 const addFoldersFromPaths = (folderPaths, detail = 'Queued for storage') => {
   const state = ensureState();
   const knownPaths = new Set(state.folders.map((folder) => folder.path));
@@ -2439,7 +2470,7 @@ const cloudFoldersAndNotify = async (folderPaths) => {
   const state = ensureState();
   const clientVault = findDefaultClientVault(state);
   if (clientVault) {
-    const folders = resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
+    const folders = resolveUploadPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
     notifyCloudUploadStarted(folders);
 
     try {
@@ -2567,7 +2598,9 @@ app.whenReady().then(async () => {
     const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
       title: clientVault || currentState.pairing.role === 'client' ? 'Add to Nubem' : 'Add vault',
-      properties: ['openDirectory', 'multiSelections', 'createDirectory'],
+      properties: clientVault
+        ? ['openFile', 'openDirectory', 'multiSelections']
+        : ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -2589,7 +2622,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('folders:cloud', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Add to Nubem',
-      properties: ['openDirectory', 'multiSelections', 'createDirectory'],
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
     });
 
     if (result.canceled || result.filePaths.length === 0) {
