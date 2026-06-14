@@ -1435,6 +1435,14 @@ const notifyCloudUploadStarted = (folders) => {
   new Notification({ title: 'Nubem Drive', body }).show();
 };
 
+const notifyCloudError = (message) => {
+  if (!Notification.isSupported()) {
+    return;
+  }
+
+  new Notification({ title: 'Nubem Drive', body: message }).show();
+};
+
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     return mainWindow;
@@ -1483,7 +1491,8 @@ const focusMainWindow = () => {
 
 const cloudFoldersAndNotify = async (folderPaths) => {
   const state = ensureState();
-  if (findDefaultClientVault(state)) {
+  const clientVault = findDefaultClientVault(state);
+  if (clientVault) {
     const folders = resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
     notifyCloudUploadStarted(folders);
 
@@ -1491,10 +1500,14 @@ const cloudFoldersAndNotify = async (folderPaths) => {
       await cloudFoldersToDefaultVault(folderPaths);
       notifyClouded(folders);
     } catch (error) {
-      if (Notification.isSupported()) {
-        new Notification({ title: 'Nubem Drive', body: error instanceof Error ? error.message : 'Upload failed' }).show();
-      }
+      notifyCloudError(error instanceof Error ? error.message : 'Upload failed');
     }
+    return;
+  }
+
+  if (state.pairing.role === 'client') {
+    focusMainWindow();
+    notifyCloudError('Join a vault before clouding folders');
     return;
   }
 
@@ -1541,8 +1554,10 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('folders:choose', async () => {
+    const currentState = ensureState();
+    const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: findDefaultClientVault(ensureState()) ? 'Cloud folder' : 'Add vault',
+      title: clientVault || currentState.pairing.role === 'client' ? 'Cloud folder' : 'Add vault',
       properties: ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 
@@ -1552,6 +1567,11 @@ app.whenReady().then(async () => {
 
     if (findDefaultClientVault(ensureState())) {
       return cloudFoldersToDefaultVault(result.filePaths);
+    }
+
+    if (ensureState().pairing.role === 'client') {
+      notifyCloudError('Join a vault before clouding folders');
+      return ensureState();
     }
 
     return (await addVaultsFromPaths(result.filePaths, 'Vault added')).state;
