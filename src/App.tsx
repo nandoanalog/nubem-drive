@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
+import type { AppState, CloudFolder, Device, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'code' | 'join' | 'reset' | 'server' | null
@@ -88,6 +88,104 @@ const statusCopy: Record<FolderStatus, string> = {
   offline: 'Offline',
 }
 
+type ConnectionTone = 'connected' | 'connecting' | 'waiting' | 'error' | 'offline' | 'idle'
+
+function clientVaults(state: AppState) {
+  return state.folders.filter((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token)
+}
+
+function isStorageDevice(device: Device) {
+  const role = String(device.role || '').toLowerCase()
+  return role.includes('storage') || role === 'server'
+}
+
+function storageDevice(state: AppState) {
+  return state.devices.find((device) => device.id !== state.currentDevice.id && isStorageDevice(device))
+}
+
+function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): {
+  actionLabel: string
+  detail: string
+  icon: typeof Cloud
+  title: string
+  tone: ConnectionTone
+} {
+  if (busy === 'join') {
+    return {
+      actionLabel: 'Link',
+      detail: `Checking the code on ${defaultRelayHost}`,
+      icon: RefreshCcw,
+      title: 'Connecting to vault',
+      tone: 'connecting',
+    }
+  }
+
+  if (error) {
+    return {
+      actionLabel: 'Fix',
+      detail: error,
+      icon: AlertTriangle,
+      title: 'Connection failed',
+      tone: 'error',
+    }
+  }
+
+  if (state.pairing.status === 'error') {
+    return {
+      actionLabel: 'Fix',
+      detail: state.pairing.message || 'The relay or storage PC did not respond',
+      icon: AlertTriangle,
+      title: 'Connection failed',
+      tone: 'error',
+    }
+  }
+
+  const joinedVaults = clientVaults(state)
+  if (joinedVaults.length > 0) {
+    const vaultLabel = joinedVaults.length === 1 ? joinedVaults[0].name : `${joinedVaults.length} vaults`
+    const storage = storageDevice(state)
+    const storageName = joinedVaults[0].storageName || state.pairing.storageName || storage?.name || 'Storage PC'
+    const storageOnline = storage?.status === 'online'
+
+    return {
+      actionLabel: 'Details',
+      detail: storageOnline ? `${storageName} is online` : `${storageName} is not online right now`,
+      icon: storageOnline ? CheckCircle2 : AlertTriangle,
+      title: `Connected to ${vaultLabel}`,
+      tone: storageOnline ? 'connected' : 'offline',
+    }
+  }
+
+  if (state.pairing.status === 'waiting') {
+    return {
+      actionLabel: 'Code',
+      detail: 'Pair code is ready; waiting for another PC to join',
+      icon: KeyRound,
+      title: 'Waiting for device',
+      tone: 'waiting',
+    }
+  }
+
+  if (state.pairing.role === 'storage') {
+    const storageReady = state.storageNode.status === 'online'
+    return {
+      actionLabel: 'Share',
+      detail: storageReady ? 'Storage mode is on; create a code to share a vault' : 'Storage service is not online',
+      icon: HardDrive,
+      title: storageReady ? 'Storage PC ready' : 'Storage PC offline',
+      tone: storageReady ? 'waiting' : 'offline',
+    }
+  }
+
+  return {
+    actionLabel: 'Link',
+    detail: 'Open Link and enter the vault code from the storage PC',
+    icon: Link2,
+    title: 'Not connected to a vault',
+    tone: 'idle',
+  }
+}
+
 function formatPairCode(value?: string) {
   const clean = (value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
   return clean.match(/.{1,4}/g)?.join('-') || clean
@@ -96,8 +194,8 @@ function formatPairCode(value?: string) {
 function pairingLine(state: AppState) {
   const joined = state.folders.filter((folder) => folder.vaultRole === 'client').length
   const shared = state.folders.filter((folder) => folder.vaultRole !== 'client').length
-  if (joined > 0) return `${joined} joined`
-  if (shared > 0) return `${shared} shared`
+  if (joined > 0) return joined === 1 ? 'Connected' : `${joined} vaults connected`
+  if (shared > 0) return shared === 1 ? 'Sharing 1 vault' : `Sharing ${shared} vaults`
   if (state.pairing.status === 'error') return 'Check host'
   return 'No vaults'
 }
@@ -238,6 +336,7 @@ function App() {
   const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
   const selectedFolderId = selectedFolder?.id
   const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
+  const connection = connectionSummary(state, pairBusy, pairError)
   const selectedSyncJobs = useMemo(() => {
     if (!selectedFolderId) return []
     return state.syncJobs
@@ -402,7 +501,11 @@ function App() {
     setPairError('')
     try {
       const nextState = await api.joinPairing(defaultRelayHost, pairCode)
+      const joinedVault = clientVaults(nextState)[0]
       setState(nextState)
+      if (joinedVault) {
+        setSelectedId(joinedVault.id)
+      }
       setPairCode('')
     } catch (error) {
       setPairError(error instanceof Error ? error.message : 'Could not join')
@@ -502,10 +605,10 @@ function App() {
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
             </label>
             <button
-              className={`icon-button link-button ${state.pairing.status}`}
+              className={`icon-button link-button ${connection.tone}`}
               onClick={() => setIsPairPanelOpen((isOpen) => !isOpen)}
-              title="Link devices"
-              aria-label="Link devices"
+              title={`${connection.title}: ${connection.detail}`}
+              aria-label={`${connection.title}: ${connection.detail}`}
             >
               <Link2 size={18} />
             </button>
@@ -536,6 +639,13 @@ function App() {
             ) : null}
           </div>
         </header>
+
+        <ConnectionStrip
+          busy={pairBusy}
+          error={pairError}
+          onOpen={() => setIsPairPanelOpen(true)}
+          state={state}
+        />
 
         {isPairPanelOpen ? (
           <PairPanel
@@ -876,6 +986,37 @@ function pathCrumbs(relativePath: string) {
   ]
 }
 
+function ConnectionStrip({
+  busy,
+  error,
+  onOpen,
+  state,
+}: {
+  busy: PairBusy
+  error: string
+  onOpen: () => void
+  state: AppState
+}) {
+  const connection = connectionSummary(state, busy, error)
+  const Icon = connection.icon
+
+  return (
+    <section className={`connection-strip ${connection.tone}`} aria-label="Vault connection">
+      <span className="connection-icon">
+        <Icon size={18} />
+      </span>
+      <span className="connection-copy">
+        <strong>{connection.title}</strong>
+        <span>{connection.detail}</span>
+      </span>
+      <button className="connection-action" onClick={onOpen} type="button">
+        <Link2 size={16} />
+        <span>{connection.actionLabel}</span>
+      </button>
+    </section>
+  )
+}
+
 function PairPanel({
   busy,
   error,
@@ -901,7 +1042,9 @@ function PairPanel({
   selectedFolder?: CloudFolder
   state: AppState
 }) {
-  const pairingMessage = error || state.pairing.message
+  const connection = connectionSummary(state, busy, error)
+  const ConnectionIcon = connection.icon
+  const pairingMessage = !error && state.pairing.status !== 'error' ? state.pairing.message : ''
   const linkedDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
   const isServer = state.storageNode.status === 'online' || state.pairing.role === 'storage'
   const canSetServer = state.currentDevice.platform === 'linux'
@@ -929,6 +1072,14 @@ function PairPanel({
             <X size={17} />
           </button>
         </div>
+      </div>
+
+      <div className={`pair-status ${connection.tone}`}>
+        <ConnectionIcon size={18} />
+        <span>
+          <strong>{connection.title}</strong>
+          <span>{connection.detail}</span>
+        </span>
       </div>
 
       <div className="pair-grid single">

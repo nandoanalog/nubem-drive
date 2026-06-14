@@ -177,6 +177,61 @@ const normalizeSyncJobs = (jobs) =>
     ? jobs.map(normalizeSyncJob).filter((job) => job.vaultFolderId && job.rootPath).slice(0, 128)
     : [];
 
+const folderTimestamp = (folder) => {
+  const value = new Date(folder?.updatedAt || folder?.createdAt || 0).getTime();
+  return Number.isFinite(value) ? value : 0;
+};
+
+const folderDedupeKey = (folder) => {
+  if (folder?.vaultRole === 'client') {
+    const vaultPath = String(folder.path || folder.name || '').trim().toLowerCase();
+    const storageName = String(folder.storageName || '').trim().toLowerCase();
+    if (vaultPath && storageName) {
+      return `client:${storageName}:${vaultPath}`;
+    }
+
+    if (folder.pairId) {
+      return `client-pair:${folder.pairId}`;
+    }
+  }
+
+  return folder?.id ? `id:${folder.id}` : '';
+};
+
+const mergeDuplicateFolders = (older, newer) => ({
+  ...older,
+  ...newer,
+  code: newer.code || older.code,
+  codeExpiresAt: newer.codeExpiresAt || older.codeExpiresAt,
+  devices: newer.devices?.length ? newer.devices : older.devices,
+});
+
+const dedupeFolders = (folders) => {
+  const next = [];
+  const byKey = new Map();
+
+  for (const folder of folders) {
+    const key = folderDedupeKey(folder);
+    if (!key) {
+      next.push(folder);
+      continue;
+    }
+
+    const existingIndex = byKey.get(key);
+    if (existingIndex === undefined) {
+      byKey.set(key, next.length);
+      next.push(folder);
+      continue;
+    }
+
+    const existing = next[existingIndex];
+    const [older, newer] = folderTimestamp(folder) >= folderTimestamp(existing) ? [existing, folder] : [folder, existing];
+    next[existingIndex] = mergeDuplicateFolders(older, newer);
+  }
+
+  return next;
+};
+
 const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
   const fresh = makeInitialState();
   const state = rawState && typeof rawState === 'object' ? rawState : {};
@@ -197,13 +252,40 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
 
   pairing.relayUrl = normalizeRelayUrl(pairing.relayUrl);
 
-  const folders = Array.isArray(state.folders)
+  let folders = dedupeFolders(Array.isArray(state.folders)
     ? state.folders.map((folder) => ({
         ...folder,
         vaultRole: folder.vaultRole || (folder.pairId && pairing.role === 'client' ? 'client' : 'storage'),
         relayUrl: normalizeRelayUrl(folder.relayUrl || pairing.relayUrl || defaultRelayUrl),
       }))
-    : [];
+    : []);
+
+  let defaultClientVault = folders.find((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
+  if (defaultClientVault && (!pairing.pairId || !pairing.token)) {
+    pairing.pairId = defaultClientVault.pairId;
+    pairing.token = defaultClientVault.token;
+    pairing.status = pairing.status === 'idle' ? 'linked' : pairing.status;
+    pairing.storageName = pairing.storageName || defaultClientVault.storageName;
+  }
+
+  if (!defaultClientVault && pairing.role === 'client' && pairing.pairId && pairing.token) {
+    const recoverableIndex = folders.findIndex((folder) => folder.id || folder.path || folder.name);
+    if (recoverableIndex !== -1) {
+      folders = folders.map((folder, index) =>
+        index === recoverableIndex
+          ? {
+              ...folder,
+              vaultRole: 'client',
+              pairId: pairing.pairId,
+              token: pairing.token,
+              storageName: folder.storageName || pairing.storageName,
+              localMode: 'online',
+            }
+          : folder
+      );
+      defaultClientVault = folders[recoverableIndex];
+    }
+  }
 
   const localDevice = {
     id: currentDevice.id,
@@ -422,11 +504,37 @@ const remoteFoldersFromPayload = (payload) =>
       }))
     : null;
 
+const mergeClientRemoteFolders = (state, payload) => {
+  const remoteFolders = remoteFoldersFromPayload(payload);
+  if (!remoteFolders?.length) {
+    return null;
+  }
+
+  return dedupeFolders(remoteFolders.map((remoteFolder) => {
+    const remotePath = remoteFolder.path || remoteFolder.name;
+    const existing = state.folders.find((folder) => {
+      if (folder.id === remoteFolder.id) return true;
+      const sameStorage = folder.storageName && payload.storageName && folder.storageName === payload.storageName;
+      return sameStorage && (folder.path || folder.name) === remotePath;
+    });
+
+    return {
+      ...existing,
+      ...remoteFolder,
+      vaultRole: 'client',
+      relayUrl: existing?.relayUrl || normalizeRelayUrl(state.pairing.relayUrl || defaultRelayUrl),
+      pairId: existing?.pairId || state.pairing.pairId,
+      token: existing?.token || state.pairing.token,
+      storageName: remoteFolder.storageName || payload.storageName || existing?.storageName,
+    };
+  }));
+};
+
 const applyRelaySnapshot = (state, payload, status = 'linked') => {
   const devices = Array.isArray(payload.devices)
     ? payload.devices.map((device) => mapRelayDevice(device, state.currentDevice.id))
     : state.devices;
-  const remoteFolders = state.pairing.role === 'client' ? remoteFoldersFromPayload(payload) : null;
+  const remoteFolders = state.pairing.role === 'client' ? mergeClientRemoteFolders(state, payload) : null;
   const hasOtherDevice = devices.some((device) => device.id !== state.currentDevice.id);
   const nextStatus = status === 'waiting' && hasOtherDevice ? 'linked' : status;
   const nextPairing = {
@@ -455,7 +563,7 @@ const applyRelaySnapshot = (state, payload, status = 'linked') => {
     ...state,
     pairing: nextPairing,
     devices,
-    folders: remoteFolders || state.folders,
+    folders: remoteFolders?.length ? remoteFolders : state.folders,
   }));
 };
 
@@ -645,7 +753,6 @@ const joinPairing = async (relayUrl, code) => {
   });
   const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
   const folderId = remoteFolder?.id || payload.vault?.id || crypto.randomUUID();
-  const known = state.folders.some((folder) => folder.pairId === payload.pairId || folder.id === folderId);
   const joinedVault = {
     id: folderId,
     name: remoteFolder?.name || payload.vault?.name || payload.storageName || 'Vault',
@@ -666,11 +773,22 @@ const joinPairing = async (relayUrl, code) => {
   const nextState = addActivity(
     {
       ...state,
-      folders: known ? state.folders : [joinedVault, ...state.folders],
+      folders: dedupeFolders([
+        joinedVault,
+        ...state.folders.filter((folder) => {
+          if (folder.pairId === payload.pairId || folder.id === folderId) return false;
+          if (folder.vaultRole !== 'client') return true;
+          const sameStorage = folder.storageName && payload.storageName && folder.storageName === payload.storageName;
+          const samePath = (folder.path || folder.name) === (joinedVault.path || joinedVault.name);
+          return !(sameStorage && samePath);
+        }),
+      ]),
       pairing: {
         relayUrl: nextRelayUrl,
         role: state.pairing.role || 'client',
         status: 'linked',
+        pairId: payload.pairId,
+        token: payload.token,
         storageName: payload.storageName,
         message: '',
       },

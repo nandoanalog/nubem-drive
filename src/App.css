@@ -264,11 +264,18 @@ button:disabled {
   transform: translateY(-1px);
 }
 
+.link-button.connected,
 .link-button.linked,
 .link-button.waiting {
   border-color: #a8d6c9;
   color: #0f5e57;
   background: #eaf7f2;
+}
+
+.link-button.connecting {
+  border-color: #b9cdf0;
+  color: #275ea7;
+  background: #e7f0ff;
 }
 
 .link-button.error,
@@ -300,6 +307,135 @@ button:disabled {
   to {
     transform: rotate(360deg);
   }
+}
+
+.connection-strip,
+.pair-status {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid #d9d3c8;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.connection-strip {
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 12px;
+}
+
+.connection-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  color: #4d5652;
+  background: #f0ece4;
+}
+
+.connection-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.connection-copy strong,
+.connection-copy span,
+.pair-status strong,
+.pair-status span span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-copy strong,
+.pair-status strong {
+  color: #171a1d;
+  font-size: 14px;
+}
+
+.connection-copy span,
+.pair-status span span {
+  color: #59615e;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.connection-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  max-width: 120px;
+  padding: 0 11px;
+  border: 1px solid #d9d3c8;
+  border-radius: 8px;
+  color: #313836;
+  background: #fffdf8;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.connection-action span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-action:hover {
+  background: #ece7db;
+}
+
+.connection-strip.connected,
+.pair-status.connected {
+  border-color: #b9ded4;
+  background: #f1faf6;
+}
+
+.connection-strip.connected .connection-icon,
+.pair-status.connected > svg {
+  color: #0f6f64;
+}
+
+.connection-strip.connecting,
+.connection-strip.waiting,
+.pair-status.connecting,
+.pair-status.waiting {
+  border-color: #b9cdf0;
+  background: #f2f7ff;
+}
+
+.connection-strip.connecting .connection-icon,
+.connection-strip.waiting .connection-icon,
+.pair-status.connecting > svg,
+.pair-status.waiting > svg {
+  color: #275ea7;
+}
+
+.connection-strip.error,
+.connection-strip.offline,
+.pair-status.error,
+.pair-status.offline {
+  border-color: #efb0a3;
+  background: #fff1ed;
+}
+
+.connection-strip.error .connection-icon,
+.connection-strip.offline .connection-icon,
+.pair-status.error > svg,
+.pair-status.offline > svg {
+  color: #a43b2d;
+}
+
+.connection-strip.connecting .connection-icon svg,
+.pair-status.connecting > svg {
+  animation: soft-spin 1s linear infinite;
 }
 
 .pair-panel {
@@ -415,6 +551,22 @@ button:disabled {
 .pair-card > strong {
   min-width: 68px;
   font-size: 14px;
+}
+
+.pair-status {
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 10px;
+}
+
+.pair-status > svg {
+  flex: 0 0 auto;
+}
+
+.pair-status > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
 }
 
 .pair-code {
@@ -1265,6 +1417,20 @@ input:focus-visible {
 
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .connection-strip {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .connection-icon {
+    display: none;
+  }
+
+  .connection-action {
+    width: 100%;
+    max-width: none;
   }
 
   .pair-grid,
