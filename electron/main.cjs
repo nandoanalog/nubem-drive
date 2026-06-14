@@ -238,7 +238,8 @@ const ensureState = () => {
   }
 
   try {
-    const state = normalizeState(JSON.parse(fs.readFileSync(file, 'utf8')), { restoreUpdates: true });
+    const rawState = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+    const state = normalizeState(JSON.parse(rawState), { restoreUpdates: true });
     writeState(state);
     return state;
   } catch {
