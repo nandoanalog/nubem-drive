@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, Device, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'code' | 'join' | 'reset' | 'server' | null
@@ -94,15 +94,6 @@ function clientVaults(state: AppState) {
   return state.folders.filter((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token)
 }
 
-function isStorageDevice(device: Device) {
-  const role = String(device.role || '').toLowerCase()
-  return role.includes('storage') || role === 'server'
-}
-
-function storageDevice(state: AppState) {
-  return state.devices.find((device) => device.id !== state.currentDevice.id && isStorageDevice(device))
-}
-
 function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): {
   actionLabel: string
   detail: string
@@ -143,16 +134,13 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
   const joinedVaults = clientVaults(state)
   if (joinedVaults.length > 0) {
     const vaultLabel = joinedVaults.length === 1 ? joinedVaults[0].name : `${joinedVaults.length} vaults`
-    const storage = storageDevice(state)
-    const storageName = joinedVaults[0].storageName || state.pairing.storageName || storage?.name || 'Storage PC'
-    const storageOnline = storage?.status === 'online'
 
     return {
       actionLabel: 'Details',
-      detail: storageOnline ? `${storageName} is online` : `${storageName} is not online right now`,
-      icon: storageOnline ? CheckCircle2 : AlertTriangle,
-      title: `Connected to ${vaultLabel}`,
-      tone: storageOnline ? 'connected' : 'offline',
+      detail: joinedVaults.length === 1 ? `Vault: ${vaultLabel}` : `${vaultLabel} linked`,
+      icon: CheckCircle2,
+      title: 'Connected to Nubem',
+      tone: 'connected',
     }
   }
 

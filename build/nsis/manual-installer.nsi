@@ -1,6 +1,6 @@
 Unicode True
 Name "Nubem Drive"
-OutFile "/home/nando/Documents/cloud/release/Nubem-Drive-Setup-0.0.38-x64.exe"
+OutFile "/home/nando/Documents/cloud/release/Nubem-Drive-Setup-0.0.39-x64.exe"
 InstallDir "$LOCALAPPDATA\Programs\Nubem Drive"
 RequestExecutionLevel user
 
@@ -49,7 +49,7 @@ Section "Install"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayName" "Nubem Drive"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayIcon" "$INSTDIR\Nubem Drive.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayVersion" "0.0.38"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayVersion" "0.0.39"
 SectionEnd
 
 Section "Uninstall"
