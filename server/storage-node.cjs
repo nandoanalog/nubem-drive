@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const defaultRelayUrl = 'https://drive.nubem.org';
 const pollIntervalMs = Number(process.env.NUBEM_STORAGE_POLL_MS || 5000);
-const chunkSize = 768 * 1024;
+const chunkSize = 256 * 1024;
 const relayRequestLockTtlMs = 10 * 60 * 1000;
 const processingRelayRequests = new Set();
 const dataFile = () =>

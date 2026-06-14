@@ -19,6 +19,7 @@ let storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
 const defaultRelayUrl = 'https://drive.nubem.org';
 const defaultUpdateManifestUrl = `${defaultRelayUrl}/latest.json`;
+const relayChunkSize = 256 * 1024;
 
 const now = () => new Date().toISOString();
 
@@ -999,7 +1000,7 @@ const sendFileToRelay = async (requestId, folderId, relativePath) => {
     throw new Error('Not a file');
   }
 
-  const chunkSize = 768 * 1024;
+  const chunkSize = relayChunkSize;
   const file = fs.openSync(target, 'r');
   const buffer = Buffer.alloc(chunkSize);
   let index = 0;
@@ -1274,7 +1275,7 @@ const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalB
 
 const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, metadata = {}) => {
   const stat = fs.statSync(sourceFile);
-  const chunkSize = 768 * 1024;
+  const chunkSize = relayChunkSize;
   const chunkCount = Math.max(1, Math.ceil(stat.size / chunkSize));
   const modifiedAt = metadata.modifiedAt || stat.mtime.toISOString();
   let requestId = '';
