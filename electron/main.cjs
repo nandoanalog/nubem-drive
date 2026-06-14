@@ -579,6 +579,27 @@ const resetPairing = () => {
 };
 
 const processingRelayRequests = new Set();
+const deleteRequestPrefix = '.nubem-command/delete/';
+
+const encodeDeleteRequestPath = (relativePath) =>
+  `${deleteRequestPrefix}${Buffer.from(relativePath, 'utf8').toString('base64url')}`;
+
+const decodeDeleteRequestPath = (request) => {
+  if (request.type === 'delete') {
+    return request.relativePath;
+  }
+
+  const relativePath = String(request.relativePath || '');
+  if (request.type !== 'list' || !relativePath.startsWith(deleteRequestPrefix)) {
+    return '';
+  }
+
+  try {
+    return Buffer.from(relativePath.slice(deleteRequestPrefix.length), 'base64url').toString('utf8');
+  } catch {
+    return '';
+  }
+};
 
 const getPairCredentials = () => {
   const state = ensureState();
@@ -879,12 +900,19 @@ const handlePendingRelayRequests = async (vaultFolderId) => {
 
     processingRelayRequests.add(request.id);
     try {
-      const result =
-        request.type === 'download'
-          ? await sendFileToRelay(request.id, vaultFolderId, request.relativePath)
-          : request.type === 'upload'
-            ? await receiveFileFromRelay(vaultFolderId, request)
-            : listCloudFolder(ensureState(), vaultFolderId, request.relativePath);
+      const deleteRelativePath = decodeDeleteRequestPath(request);
+      let result;
+      if (deleteRelativePath) {
+        result = deleteCloudPath(ensureState(), vaultFolderId, deleteRelativePath);
+      } else if (request.type === 'download') {
+        result = await sendFileToRelay(request.id, vaultFolderId, request.relativePath);
+      } else if (request.type === 'upload') {
+        result = await receiveFileFromRelay(vaultFolderId, request);
+      } else if (request.type === 'delete') {
+        result = deleteCloudPath(ensureState(), vaultFolderId, request.relativePath);
+      } else {
+        result = listCloudFolder(ensureState(), vaultFolderId, request.relativePath);
+      }
       await completeRelayRequest(vaultFolderId, request.id, result);
     } catch (error) {
       await completeRelayRequest(vaultFolderId, request.id, null, error instanceof Error ? error.message : 'Request failed');
@@ -939,6 +967,69 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
 
   writeState(addActivity(ensureState(), 'download', result.fileName, result.sizeLabel || 'Downloaded'));
   return { ok: true, filePath: saveResult.filePath };
+};
+
+const deleteCloudPath = (state, folderId, relativePath = '') => {
+  const safeRelativePath = validateRelativePath(relativePath);
+  if (!safeRelativePath) {
+    throw new Error('Select a file or folder');
+  }
+
+  const { root, target } = resolveCloudPath(state, folderId, safeRelativePath);
+  if (target === root) {
+    throw new Error('Cannot remove the vault root');
+  }
+
+  const stat = fs.lstatSync(target);
+  const kind = stat.isDirectory() && !stat.isSymbolicLink() ? 'folder' : 'file';
+  fs.rmSync(target, { recursive: kind === 'folder', force: false });
+
+  return {
+    name: path.basename(target),
+    relativePath: safeRelativePath.split(path.sep).join('/'),
+    type: kind,
+    deletedAt: now(),
+  };
+};
+
+const requireDeleteResult = (result) => {
+  if (result?.deletedAt && (result.type === 'file' || result.type === 'folder') && result.relativePath) {
+    return result;
+  }
+
+  throw new Error('Storage PC needs the latest Nubem Drive to delete from vault');
+};
+
+const deleteRemoteEntry = async (folderId, relativePath = '') => {
+  const safeRelativePath = validateRelativePath(relativePath).split(path.sep).join('/');
+  if (!safeRelativePath) {
+    throw new Error('Select a file or folder');
+  }
+
+  const name = path.basename(safeRelativePath);
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Delete', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Delete from vault',
+    message: `Delete "${name}" from the vault?`,
+    detail: 'This removes it from the storage PC for every paired device.',
+  });
+
+  if (result.response !== 0) {
+    return { ok: false, canceled: true };
+  }
+
+  const state = ensureState();
+  const deleteResult = requireDeleteResult(
+    state.pairing.role === 'storage'
+      ? deleteCloudPath(state, folderId, safeRelativePath)
+      : await waitForVaultRequest(folderId, await createRelayRequest('list', folderId, encodeDeleteRequestPath(safeRelativePath)), 15 * 60 * 1000)
+  );
+
+  writeState(addActivity(ensureState(), 'remove', deleteResult.name || name, 'Deleted from vault'));
+  return { ok: true, deleted: deleteResult };
 };
 
 const findDefaultClientVault = (state) => state.folders.find((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
@@ -1679,6 +1770,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('pairing:reset', () => resetPairing());
   ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));
   ipcMain.handle('remote:download', (_event, folderId, relativePath) => downloadRemoteFile(folderId, relativePath));
+  ipcMain.handle('remote:delete', (_event, folderId, relativePath) => deleteRemoteEntry(folderId, relativePath));
   ipcMain.handle('updates:check', () => checkForUpdates());
   ipcMain.handle('updates:download', () => downloadUpdate());
   ipcMain.handle('updates:install', () => installUpdate());

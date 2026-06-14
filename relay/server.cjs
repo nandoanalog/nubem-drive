@@ -403,7 +403,7 @@ const handlers = {
       return { status: 401, payload: { ok: false, error: 'Not linked' } };
     }
 
-    const allowedTypes = new Set(['download', 'list', 'upload']);
+    const allowedTypes = new Set(['delete', 'download', 'list', 'upload']);
     const type = allowedTypes.has(body.type) ? body.type : 'list';
     const requestId = crypto.randomUUID();
     const request = {

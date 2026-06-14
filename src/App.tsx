@@ -304,6 +304,23 @@ function App() {
     }
   }
 
+  async function deleteRemoteEntry(entry: RemoteEntry) {
+    if (!api || !selectedFolder) return
+    setRemoteBusy(true)
+    setRemoteError('')
+    try {
+      const result = await api.deleteRemoteEntry(selectedFolder.id, entry.relativePath)
+      if (result.ok) {
+        setState(await api.getState())
+        setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, remoteListing?.path || ''))
+      }
+    } catch (error) {
+      setRemoteError(error instanceof Error ? error.message : 'Could not delete')
+    } finally {
+      setRemoteBusy(false)
+    }
+  }
+
   async function createPairCode() {
     if (!api) return
     if (!selectedFolder || selectedFolder.vaultRole === 'client') {
@@ -478,6 +495,7 @@ function App() {
                 busy={remoteBusy}
                 error={remoteError}
                 listing={remoteListing}
+                onDelete={deleteRemoteEntry}
                 onDownload={downloadRemoteEntry}
                 onOpen={browseRemotePath}
               />
@@ -599,12 +617,14 @@ function RemoteBrowser({
   busy,
   error,
   listing,
+  onDelete,
   onDownload,
   onOpen,
 }: {
   busy: boolean
   error: string
   listing: RemoteListing | null
+  onDelete: (entry: RemoteEntry) => void
   onDownload: (entry: RemoteEntry) => void
   onOpen: (relativePath: string) => void
 }) {
@@ -718,6 +738,15 @@ function RemoteBrowser({
                   <Download size={16} />
                 </button>
               ) : null}
+              <button
+                className="danger-action"
+                disabled={busy}
+                onClick={() => onDelete(entry)}
+                title="Delete from vault"
+                aria-label={`Delete ${entry.name} from vault`}
+              >
+                <Trash2 size={16} />
+              </button>
             </span>
           </div>
         ))}

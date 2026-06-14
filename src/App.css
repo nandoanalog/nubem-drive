@@ -861,7 +861,7 @@ button:disabled {
 .remote-table-head,
 .remote-entry {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 88px 96px 124px 42px;
+  grid-template-columns: minmax(220px, 1fr) 88px 96px 124px 76px;
   align-items: center;
   gap: 12px;
   padding: 0 12px;
@@ -964,6 +964,7 @@ button:disabled {
 
 .remote-actions {
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
 }
 
@@ -981,6 +982,16 @@ button:disabled {
 
 .remote-actions button:hover:not(:disabled) {
   background: #dff2eb;
+}
+
+.remote-actions button.danger-action {
+  border-color: #efc0b7;
+  color: #a43b2d;
+  background: #fff1ed;
+}
+
+.remote-actions button.danger-action:hover:not(:disabled) {
+  background: #ffe5de;
 }
 
 .remote-actions button:disabled {

@@ -91,6 +91,17 @@ export type RemoteDownloadResult = {
   filePath?: string
 }
 
+export type RemoteDeleteResult = {
+  ok: boolean
+  canceled?: boolean
+  deleted?: {
+    name: string
+    relativePath: string
+    type: 'file' | 'folder'
+    deletedAt: string
+  }
+}
+
 export type ActivityItem = {
   id: string
   type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download' | 'remove' | 'vault'
@@ -129,6 +140,7 @@ export type NubemDriveApi = {
   resetPairing: () => Promise<AppState>
   browseRemoteFolder: (folderId: string, relativePath: string) => Promise<RemoteListing>
   downloadRemoteFile: (folderId: string, relativePath: string) => Promise<RemoteDownloadResult>
+  deleteRemoteEntry: (folderId: string, relativePath: string) => Promise<RemoteDeleteResult>
   checkForUpdates: () => Promise<AppState>
   downloadUpdate: () => Promise<AppState>
   installUpdate: () => Promise<AppState>
