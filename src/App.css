@@ -850,6 +850,51 @@ button:disabled {
   white-space: nowrap;
 }
 
+.vault-name-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.vault-name-form input {
+  min-width: 0;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #202623;
+  background: transparent;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.vault-name-form input:focus {
+  border-color: #b9ded4;
+  background: #fffdf8;
+  outline: none;
+}
+
+.vault-name-form button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #e0d9cf;
+  border-radius: 8px;
+  color: #4b5550;
+  background: #faf7ef;
+  cursor: pointer;
+}
+
+.vault-name-form button:not(:disabled):hover {
+  border-color: #b9ded4;
+  color: #0f5e57;
+  background: #e5f5ef;
+}
+
 .folder-glyph {
   width: 44px;
   height: 44px;
@@ -908,6 +953,12 @@ button:disabled {
 
 .full-width {
   width: 100%;
+}
+
+.action-state {
+  display: grid;
+  flex: 1;
+  place-items: center;
 }
 
 .meta-strip {

@@ -16,8 +16,10 @@ import {
   Laptop,
   Link2,
   Pause,
+  Pencil,
   Plus,
   RefreshCcw,
+  Save,
   Search,
   Trash2,
   UploadCloud,
@@ -34,6 +36,7 @@ type SortDirection = 'asc' | 'desc'
 const defaultRelayHost = 'drive.nubem.org'
 
 const demoState: AppState = {
+  appMode: 'client',
   storageNode: {
     name: 'Main storage',
     path: '/mnt/nubem-storage',
@@ -189,7 +192,7 @@ function formatPairCode(value?: string) {
 }
 
 function pairingLine(state: AppState) {
-  const joined = state.folders.filter((folder) => folder.vaultRole === 'client').length
+  const joined = clientVaults(state).length
   const shared = state.folders.filter((folder) => folder.vaultRole !== 'client').length
   if (joined > 0 && (state.pairing.status === 'error' || state.pairing.status === 'offline')) return 'Reconnecting'
   if (joined > 0) return joined === 1 ? 'Connected' : `${joined} vaults connected`
@@ -199,23 +202,11 @@ function pairingLine(state: AppState) {
 }
 
 function roleBadge(state: AppState) {
-  const hasClientVault = state.folders.some((folder) => folder.vaultRole === 'client')
-  const isServer = state.storageNode.status === 'online' || state.pairing.role === 'storage'
-  const isClient = hasClientVault || state.pairing.role !== 'storage'
-
-  if (isServer && isClient) {
-    return { label: 'Both', title: 'Server and client', className: 'both' }
+  if (state.appMode === 'server') {
+    return { label: 'Server', title: 'Server app', className: 'server' }
   }
 
-  if (isServer) {
-    return { label: 'Server', title: 'Server PC', className: 'server' }
-  }
-
-  if (isClient) {
-    return { label: 'Client', title: 'Client PC', className: 'client' }
-  }
-
-  return { label: 'Client', title: 'Client PC', className: 'client' }
+  return { label: 'Client', title: 'Client app', className: 'client' }
 }
 
 const statusIcons: Record<FolderStatus, typeof Cloud> = {
@@ -283,6 +274,8 @@ function App() {
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteError, setRemoteError] = useState('')
   const [remoteNotice, setRemoteNotice] = useState('')
+  const [vaultName, setVaultName] = useState('')
+  const [isRenamingVault, setIsRenamingVault] = useState(false)
 
   const api = window.nubemDrive
 
@@ -334,6 +327,8 @@ function App() {
   const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
   const selectedFolderId = selectedFolder?.id
   const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
+  const selectedIsLinkedClientVault = selectedIsClientVault && Boolean(selectedFolder?.pairId && selectedFolder.token)
+  const isServerApp = state.appMode === 'server'
   const connection = connectionSummary(state, pairBusy, pairError)
   const selectedSyncJobs = useMemo(() => {
     if (!selectedFolderId) return []
@@ -344,10 +339,14 @@ function App() {
   const currentRole = roleBadge(state)
 
   useEffect(() => {
+    setVaultName(selectedFolder?.name || '')
+  }, [selectedFolder?.id, selectedFolder?.name])
+
+  useEffect(() => {
     let active = true
 
     async function loadRemoteRoot() {
-      if (!api || !selectedFolderId || !selectedIsClientVault) {
+      if (!api || !selectedFolderId || !selectedIsLinkedClientVault) {
         setRemoteListing(null)
         setRemoteError('')
         return
@@ -377,22 +376,27 @@ function App() {
     return () => {
       active = false
     }
-  }, [api, selectedFolderId, selectedIsClientVault])
+  }, [api, selectedFolderId, selectedIsLinkedClientVault])
 
   async function chooseFolders() {
     if (!api) return
+    if (!isServerApp && !selectedIsLinkedClientVault) {
+      setIsPairPanelOpen(true)
+      return
+    }
+
     setRemoteBusy(true)
     setRemoteError('')
-    setRemoteNotice(selectedIsClientVault ? 'Uploading' : '')
+      setRemoteNotice(selectedIsLinkedClientVault ? 'Uploading' : '')
     try {
       const nextState = await api.chooseFolders()
       setState(nextState)
       setSelectedId((currentId) => {
-        if (selectedIsClientVault && selectedFolder) return selectedFolder.id
+        if (selectedIsLinkedClientVault && selectedFolder) return selectedFolder.id
         if (currentId && nextState.folders.some((folder) => folder.id === currentId)) return currentId
         return nextState.folders[0]?.id
       })
-      if (selectedFolder && selectedIsClientVault) {
+      if (selectedFolder && selectedIsLinkedClientVault) {
         setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, remoteListing?.path || ''))
         setRemoteNotice('Queued for Nubem')
       } else {
@@ -529,6 +533,23 @@ function App() {
     }
   }
 
+  async function renameSelectedVault() {
+    if (!api || !selectedFolder || !selectedIsClientVault) return
+    const cleanName = vaultName.trim()
+    if (!cleanName || cleanName === selectedFolder.name) {
+      setVaultName(selectedFolder.name)
+      return
+    }
+
+    setIsRenamingVault(true)
+    try {
+      const nextState = await api.renameVault(selectedFolder.id, cleanName)
+      setState(nextState)
+    } finally {
+      setIsRenamingVault(false)
+    }
+  }
+
   async function setServerMode(enabled: boolean) {
     if (!api) return
     setPairBusy('server')
@@ -563,7 +584,7 @@ function App() {
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="Primary">
-        <div className="brand-lockup" title="Nubem Drive">
+        <div className="brand-lockup" title={isServerApp ? 'Nubem Server' : 'Nubem Drive'}>
           <div className="brand-mark">
             <Cloud size={22} strokeWidth={2.4} />
           </div>
@@ -586,7 +607,7 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>Vaults</h1>
+            <h1>{isServerApp ? 'Storage' : 'Vault'}</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -619,8 +640,8 @@ function App() {
             <button
               className="primary-button icon-only"
               onClick={chooseFolders}
-              title={selectedIsClientVault ? 'Add to Nubem' : 'Add vault'}
-              aria-label={selectedIsClientVault ? 'Add to Nubem' : 'Add vault'}
+              title={isServerApp ? 'Add storage folder' : 'Add to Nubem'}
+              aria-label={isServerApp ? 'Add storage folder' : 'Add to Nubem'}
             >
               <Plus size={18} />
             </button>
@@ -652,7 +673,14 @@ function App() {
 
         <div className="content-grid">
           <section className={`folder-browser ${selectedIsClientVault ? 'remote-panel' : ''}`} aria-label={selectedIsClientVault ? 'Vault files' : 'Cloud folders'}>
-            {selectedIsClientVault ? (
+            {selectedIsClientVault && !selectedIsLinkedClientVault ? (
+              <div className="empty-state action-state">
+                <button className="primary-button" onClick={() => setIsPairPanelOpen(true)}>
+                  <Link2 size={17} />
+                  Link vault
+                </button>
+              </div>
+            ) : selectedIsClientVault ? (
               <RemoteBrowser
                 busy={remoteBusy}
                 error={remoteError}
@@ -710,9 +738,32 @@ function App() {
                   <div className="folder-glyph">
                     <Folder size={24} />
                   </div>
-                  <div>
-                    <h2>{selectedFolder.name}</h2>
-                  </div>
+                  {selectedIsClientVault ? (
+                    <form className="vault-name-form" onSubmit={(event) => {
+                      event.preventDefault()
+                      renameSelectedVault()
+                    }}>
+                      <input
+                        aria-label="Vault name"
+                        maxLength={80}
+                        onBlur={renameSelectedVault}
+                        onChange={(event) => setVaultName(event.target.value)}
+                        value={vaultName}
+                      />
+                      <button
+                        disabled={isRenamingVault || !vaultName.trim() || vaultName.trim() === selectedFolder.name}
+                        title="Rename vault"
+                        aria-label="Rename vault"
+                        type="submit"
+                      >
+                        {isRenamingVault ? <RefreshCcw size={15} /> : vaultName.trim() === selectedFolder.name ? <Pencil size={15} /> : <Save size={15} />}
+                      </button>
+                    </form>
+                  ) : (
+                    <div>
+                      <h2>{selectedFolder.name}</h2>
+                    </div>
+                  )}
                 </div>
 
                 {!selectedIsClientVault ? (
@@ -1065,9 +1116,9 @@ function PairPanel({
   const ConnectionIcon = connection.icon
   const pairingMessage = !error && state.pairing.status !== 'error' ? state.pairing.message : ''
   const linkedDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
-  const isServer = state.storageNode.status === 'online' || state.pairing.role === 'storage'
+  const isServerApp = state.appMode === 'server'
   const canSetServer = state.currentDevice.platform === 'linux'
-  const serverButtonLabel = isServer ? 'Use as client' : 'Set this PC as server'
+  const serverButtonLabel = state.storageNode.status === 'online' ? 'Stop server' : 'Start server'
 
   return (
     <section className="pair-panel" aria-label="Link devices">
@@ -1077,16 +1128,18 @@ function PairPanel({
           <span>{pairingLine(state)}</span>
         </div>
         <div className="pair-panel-actions">
-          <button
-            className={`server-toggle ${isServer ? 'is-server' : ''}`}
-            disabled={busy === 'server' || !canSetServer}
-            onClick={() => onSetServerMode(!isServer)}
-            title={canSetServer ? serverButtonLabel : 'Server mode is available on Linux'}
-            type="button"
-          >
-            <HardDrive size={16} />
-            <span>{busy === 'server' ? '...' : serverButtonLabel}</span>
-          </button>
+          {isServerApp ? (
+            <button
+              className={`server-toggle ${state.storageNode.status === 'online' ? 'is-server' : ''}`}
+              disabled={busy === 'server' || !canSetServer}
+              onClick={() => onSetServerMode(state.storageNode.status !== 'online')}
+              title={canSetServer ? serverButtonLabel : 'Server app runs on Linux'}
+              type="button"
+            >
+              <HardDrive size={16} />
+              <span>{busy === 'server' ? '...' : serverButtonLabel}</span>
+            </button>
+          ) : null}
           <button className="icon-button compact" onClick={onClose} title="Close" aria-label="Close">
             <X size={17} />
           </button>
@@ -1102,7 +1155,7 @@ function PairPanel({
       </div>
 
       <div className="pair-grid single">
-        {isServer ? (
+        {isServerApp ? (
           <div className="pair-card">
             <HardDrive size={19} />
             <strong>Vault</strong>

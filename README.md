@@ -1,58 +1,37 @@
 # Nubem Drive
 
-Private folder cloud desktop app.
+Private folder cloud with two desktop apps:
 
-Nubem Drive is an Electron + React app for marking local folders as cloud folders, pairing devices through a lightweight VPS relay, and giving each computer access to the shared storage flow.
+- `Nubem Server` runs on the HDD/storage PC.
+- `Nubem Drive` runs on client PCs.
 
-## Current Features
+Clients link to a server vault with a code. After that, `Add to Nubem` copies selected folders into that vault and resumes missing files if the connection drops.
 
-- Linux and Windows desktop app
-- Right-click folder action: `Add or remove from Nubem`
-- Single-instance desktop behavior
-- Device pairing through `drive.nubem.org`
-- Remote folder browsing from paired devices
-- Relay-backed file downloads
-- Headless storage server for the HDD machine
-- Persistent client upload queue with file-level resume
-- Strong one-time pairing codes with relay rate limiting
-- Platform update manifest with background update checks
-- Lightweight Node relay service
-- Download page for installers
+## Apps
+
+### Nubem Server
+
+- Linux app for the HDD/storage machine.
+- Adds storage folders that can be shared by code.
+- Installs the user service `nubem-server-storage.service`.
+- Keeps server state in `~/.config/nubem-server/state.json`.
+
+### Nubem Drive
+
+- Client app for normal computers.
+- Creates a local client vault automatically.
+- Lets the user rename the vault.
+- Adds the right-click folder action `Add or remove from Nubem`.
+- Keeps client state in `~/.config/nubem-drive/state.json`.
 
 ## Development
 
 ```bash
 npm install
 npm run dev
+npm run dev:server
 npm run storage
 ```
-
-On Linux installs, the storage server is also installed as `nubem-drive-storage` and a user service named `nubem-drive-storage.service`.
-
-## Updating the Storage PC
-
-The storage PC must run the same current repo build as the Windows client. If the Windows app shows `Storage PC is offline`, `Storage PC did not respond`, a folder remains queued, or remote delete fails with a `.nubem-command/delete` path, update and restart the storage service on the Linux storage PC.
-
-```bash
-cd ~/Documents/cloud
-git pull --ff-only
-npm ci
-npm run build
-npm run dist:linux
-sudo apt install -y ./release/*.deb
-systemctl --user daemon-reload
-systemctl --user enable --now nubem-drive-storage.service
-systemctl --user restart nubem-drive-storage.service
-systemctl --user status nubem-drive-storage.service --no-pager
-```
-
-To watch the storage worker process requests:
-
-```bash
-journalctl --user -u nubem-drive-storage.service -f
-```
-
-After restart, create a fresh vault code on the storage PC and join it from the Windows client. The client should show the storage device as `online`; only then are queued folders expected to copy into the vault.
 
 ## Checks
 
@@ -63,8 +42,35 @@ npm run build
 
 ## Packaging
 
-Linux packages are built from this machine. Windows installers are built and released from the Windows machine.
+Linux packages are built from this machine. Windows client installers are built and released from the Windows machine.
 
 ```bash
+npm run dist:client:linux
+npm run dist:server:linux
 npm run dist:linux
 ```
+
+Generated Linux packages:
+
+- `release/Nubem-Drive-<version>-amd64.deb`
+- `release/Nubem-Server-<version>-amd64.deb`
+
+## Storage PC
+
+Install or update the server app:
+
+```bash
+sudo apt install --reinstall ./release/Nubem-Server-<version>-amd64.deb
+systemctl --user daemon-reload
+systemctl --user enable --now nubem-server-storage.service
+systemctl --user restart nubem-server-storage.service
+systemctl --user status nubem-server-storage.service --no-pager
+```
+
+Watch the storage worker:
+
+```bash
+journalctl --user -u nubem-server-storage.service -f
+```
+
+The server UI should say `Server`. The client UI should say `Client`.

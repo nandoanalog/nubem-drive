@@ -9,15 +9,20 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && node scripts/start-electron.cjs\"",
+    "dev:server": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && NUBEM_APP_FLAVOR=server node scripts/start-electron.cjs\"",
     "web:dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "dist:linux": "npm run build && electron-builder --linux deb --x64",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
-    "dist:all": "npm run build && electron-builder --linux deb --win nsis --x64",
+    "dist:client:linux": "npm run build && electron-builder --config electron-builder.client.cjs --linux deb --x64",
+    "dist:server:linux": "npm run build && electron-builder --config electron-builder.server.cjs --linux deb --x64",
+    "dist:linux": "npm run dist:client:linux && npm run dist:server:linux",
+    "dist:client:win": "npm run build && electron-builder --config electron-builder.client.cjs --win nsis --x64",
+    "dist:win": "npm run dist:client:win",
+    "dist:all": "npm run dist:linux",
     "electron": "node scripts/start-electron.cjs",
+    "electron:server": "NUBEM_APP_FLAVOR=server node scripts/start-electron.cjs",
     "lint": "eslint .",
     "preview": "vite preview",
-    "storage": "node server/storage-node.cjs"
+    "storage": "NUBEM_DRIVE_STATE=$HOME/.config/nubem-server/state.json node server/storage-node.cjs"
   },
   "dependencies": {
     "lucide-react": "^1.18.0",
@@ -40,45 +45,5 @@
     "typescript-eslint": "^8.11.0",
     "vite": "^5.4.10",
     "wait-on": "^7.2.0"
-  },
-  "build": {
-    "appId": "org.nubem.drive",
-    "productName": "Nubem Drive",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "server/**/*",
-      "package.json"
-    ],
-    "linux": {
-      "target": [
-        "deb"
-      ],
-      "category": "Utility",
-      "maintainer": "Nando <nando@nubem.org>",
-      "executableName": "nubem-drive",
-      "artifactName": "Nubem-Drive-${version}-${arch}.${ext}"
-    },
-    "deb": {
-      "afterInstall": "build/linux/after-install.sh",
-      "afterRemove": "build/linux/after-remove.sh"
-    },
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "signAndEditExecutable": false,
-      "executableName": "Nubem Drive",
-      "artifactName": "Nubem-Drive-Setup-${version}-${arch}.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "include": "build/nsis/context-menu.nsh"
-    }
   }
 }

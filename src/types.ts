@@ -138,6 +138,7 @@ export type SyncJob = {
 }
 
 export type AppState = {
+  appMode: 'client' | 'server'
   storageNode: StorageNode
   currentDevice: {
     id: string
@@ -164,6 +165,7 @@ export type NubemDriveApi = {
   createPairCode: (relayUrl: string) => Promise<AppState>
   joinPairing: (relayUrl: string, code: string) => Promise<AppState>
   shareVault: (id: string, relayUrl: string) => Promise<AppState>
+  renameVault: (id: string, name: string) => Promise<AppState>
   refreshPairing: () => Promise<AppState>
   resetPairing: () => Promise<AppState>
   setServerMode: (enabled: boolean) => Promise<AppState>

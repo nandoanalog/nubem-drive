@@ -14,6 +14,7 @@ const processingRelayRequests = new Set();
 const dataFile = () =>
   process.env.NUBEM_DRIVE_STATE ||
   path.join(os.homedir(), process.platform === 'win32' ? 'AppData/Roaming/nubem-drive/state.json' : '.config/nubem-drive/state.json');
+const storageTitle = () => (dataFile().includes('nubem-server') ? 'Nubem Server Storage node' : 'Nubem Drive Storage node');
 
 const now = () => new Date().toISOString();
 
@@ -637,7 +638,7 @@ const tick = async () => {
 };
 
 const main = async () => {
-  console.log(`Nubem Drive Storage node`);
+  console.log(storageTitle());
   console.log(`state=${dataFile()}`);
   console.log(`poll=${pollIntervalMs}ms`);
 

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('nubemDrive', {
   createPairCode: (relayUrl) => ipcRenderer.invoke('pairing:create-code', relayUrl),
   joinPairing: (relayUrl, code) => ipcRenderer.invoke('pairing:join', relayUrl, code),
   shareVault: (id, relayUrl) => ipcRenderer.invoke('vaults:share', id, relayUrl),
+  renameVault: (id, name) => ipcRenderer.invoke('vaults:rename', id, name),
   refreshPairing: () => ipcRenderer.invoke('pairing:refresh'),
   resetPairing: () => ipcRenderer.invoke('pairing:reset'),
   setServerMode: (enabled) => ipcRenderer.invoke('server:set-mode', enabled),

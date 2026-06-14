@@ -7,6 +7,30 @@ const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
+let packageMetadata = {};
+try {
+  packageMetadata = require('../package.json');
+} catch {
+  packageMetadata = {};
+}
+
+const detectAppFlavor = () => {
+  const explicit = String(process.env.NUBEM_APP_FLAVOR || packageMetadata.nubemFlavor || '').toLowerCase();
+  if (explicit === 'server') return 'server';
+  if (explicit === 'client') return 'client';
+
+  const identity = [packageMetadata.name, packageMetadata.productName, process.execPath].join(' ').toLowerCase();
+  return identity.includes('server') ? 'server' : 'client';
+};
+
+const appFlavor = detectAppFlavor();
+const isServerApp = appFlavor === 'server';
+const appProductName = isServerApp ? 'Nubem Server' : 'Nubem Drive';
+const appUserDataName = isServerApp ? 'nubem-server' : 'nubem-drive';
+
+app.setName(appProductName);
+app.setPath('userData', path.join(app.getPath('appData'), appUserDataName));
+
 const isDev = !app.isPackaged;
 let mainWindow;
 let heartbeatTimer;
@@ -17,8 +41,10 @@ let syncTimer;
 let syncWork;
 let syncWorkStartedAt = 0;
 let storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
+const storageServiceName = isServerApp ? 'nubem-server-storage.service' : 'nubem-drive-storage.service';
 
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
+const legacyDriveDataFile = () => path.join(app.getPath('appData'), 'nubem-drive', 'state.json');
 const defaultRelayUrl = 'https://drive.nubem.org';
 const defaultUpdateManifestUrl = `${defaultRelayUrl}/latest.json`;
 const relayChunkSize = 256 * 1024;
@@ -26,9 +52,10 @@ const relayChunkSize = 256 * 1024;
 const now = () => new Date().toISOString();
 
 const updatePlatformKey = () => {
-  if (process.platform === 'win32') return 'win32-x64';
-  if (process.platform === 'linux') return 'linux-x64';
-  return `${process.platform}-${process.arch}`;
+  const suffix = isServerApp ? '-server' : '';
+  if (process.platform === 'win32') return `win32-x64${suffix}`;
+  if (process.platform === 'linux') return `linux-x64${suffix}`;
+  return `${process.platform}-${process.arch}${suffix}`;
 };
 
 const normalizeUpdateStatus = (updates = {}) => {
@@ -51,13 +78,37 @@ const updateDefaults = (updates = {}, { restoreTransient = false } = {}) => ({
   progress: Number.isFinite(updates.progress) ? updates.progress : 0,
 });
 
+const defaultClientVaultName = 'My Vault';
+
+const makeClientVault = (patch = {}) => ({
+  id: patch.id || crypto.randomUUID(),
+  name: String(patch.name || defaultClientVaultName),
+  path: String(patch.path || patch.name || defaultClientVaultName),
+  vaultRole: 'client',
+  relayUrl: normalizeRelayUrl(patch.relayUrl || defaultRelayUrl),
+  pairId: patch.pairId || '',
+  token: patch.token || '',
+  code: patch.code || '',
+  codeExpiresAt: patch.codeExpiresAt || '',
+  storageName: patch.storageName || '',
+  sizeLabel: patch.sizeLabel || 'Cloud',
+  itemCount: Number.isFinite(patch.itemCount) ? patch.itemCount : 0,
+  updatedAt: patch.updatedAt || now(),
+  status: patch.status || 'offline',
+  localMode: patch.localMode || 'online',
+  devices: patch.devices?.length ? patch.devices : [],
+  progress: Number.isFinite(patch.progress) ? patch.progress : 0,
+});
+
 const makeInitialState = () => {
   const deviceId = crypto.randomUUID();
+  const role = isServerApp ? 'storage' : 'client';
 
   return {
+    appMode: appFlavor,
     storageNode: {
-      name: `${os.hostname()} storage`,
-      path: path.join(os.homedir(), 'Nubem Storage'),
+      name: `${os.hostname()} ${isServerApp ? 'server' : 'storage'}`,
+      path: path.join(os.homedir(), isServerApp ? 'Nubem Server' : 'Nubem Storage'),
       status: 'offline',
       relayStatus: 'offline',
     },
@@ -69,15 +120,16 @@ const makeInitialState = () => {
     },
     pairing: {
       relayUrl: defaultRelayUrl,
-      role: 'client',
+      role,
       status: 'idle',
+      storageName: isServerApp ? os.hostname() : '',
     },
-    folders: [],
+    folders: isServerApp ? [] : [makeClientVault()],
     syncJobs: [],
     activity: [],
     updates: updateDefaults(),
     devices: [
-      { id: deviceId, name: os.hostname(), role: 'Client', status: 'online', address: 'Local' },
+      { id: deviceId, name: os.hostname(), role: isServerApp ? 'Server' : 'Client', status: 'online', address: 'Local' },
     ],
   };
 };
@@ -108,7 +160,7 @@ const storageServiceStatus = () => {
   }
 
   try {
-    const result = spawnSync('systemctl', ['--user', 'is-active', 'nubem-drive-storage.service'], {
+    const result = spawnSync('systemctl', ['--user', 'is-active', storageServiceName], {
       encoding: 'utf8',
       timeout: 1500,
     });
@@ -268,7 +320,11 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
     ...(state.pairing || {}),
   };
 
+  pairing.role = isServerApp ? 'storage' : 'client';
   pairing.relayUrl = normalizeRelayUrl(pairing.relayUrl);
+  if (isServerApp) {
+    pairing.storageName = pairing.storageName || currentDevice.name;
+  }
 
   let folders = keepSingleClientVault(dedupeFolders(Array.isArray(state.folders)
     ? state.folders.map((folder) => ({
@@ -277,6 +333,14 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
         relayUrl: normalizeRelayUrl(folder.relayUrl || pairing.relayUrl || defaultRelayUrl),
       }))
     : []), pairing);
+
+  folders = isServerApp
+    ? folders.filter((folder) => folder.vaultRole !== 'client')
+    : folders.filter((folder) => folder.vaultRole === 'client');
+
+  if (!isServerApp && !folders.some((folder) => folder.vaultRole === 'client')) {
+    folders = [makeClientVault(), ...folders];
+  }
 
   let defaultClientVault = folders.find((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
   if (defaultClientVault && (!pairing.pairId || !pairing.token)) {
@@ -321,6 +385,7 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
   return {
     ...fresh,
     ...state,
+    appMode: appFlavor,
     storageNode: {
       ...fresh.storageNode,
       ...(state.storageNode || {}),
@@ -339,6 +404,32 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
 
 const ensureState = () => {
   const file = dataFile();
+  if (isServerApp && !fs.existsSync(file) && fs.existsSync(legacyDriveDataFile())) {
+    try {
+      const legacyState = JSON.parse(fs.readFileSync(legacyDriveDataFile(), 'utf8').replace(/^\uFEFF/, ''));
+      const storageFolders = Array.isArray(legacyState.folders)
+        ? legacyState.folders.filter((folder) => folder.vaultRole !== 'client')
+        : [];
+
+      if (storageFolders.length > 0) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, JSON.stringify({
+          ...legacyState,
+          appMode: 'server',
+          pairing: {
+            ...(legacyState.pairing || {}),
+            role: 'storage',
+            status: 'idle',
+          },
+          folders: storageFolders,
+          syncJobs: [],
+        }, null, 2));
+      }
+    } catch {
+      // Start fresh if the old client state cannot be read.
+    }
+  }
+
   if (!fs.existsSync(file)) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(makeInitialState(), null, 2));
@@ -788,12 +879,13 @@ const joinPairing = async (relayUrl, code) => {
     device: localRelayDevice(state, 'client'),
   });
   const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
+  const existingClientVault = state.folders.find((folder) => folder.vaultRole === 'client');
   const folderId = remoteFolder?.id || payload.vault?.id || crypto.randomUUID();
-  const joinedVault = {
+  const joinedVault = makeClientVault({
+    ...existingClientVault,
     id: folderId,
-    name: remoteFolder?.name || payload.vault?.name || payload.storageName || 'Vault',
+    name: existingClientVault?.name || remoteFolder?.name || payload.vault?.name || payload.storageName || defaultClientVaultName,
     path: remoteFolder?.path || remoteFolder?.name || 'Vault',
-    vaultRole: 'client',
     relayUrl: nextRelayUrl,
     pairId: payload.pairId,
     token: payload.token,
@@ -805,7 +897,10 @@ const joinPairing = async (relayUrl, code) => {
     localMode: 'online',
     devices: remoteFolder?.devices?.length ? remoteFolder.devices : [payload.storageName || 'Storage PC'],
     progress: 100,
-  };
+  });
+  const syncJobs = state.syncJobs
+    .map((job) => (existingClientVault?.id && job.vaultFolderId === existingClientVault.id ? { ...job, vaultFolderId: folderId } : job))
+    .filter((job) => job.vaultFolderId === folderId);
   const nextState = addActivity(
     {
       ...state,
@@ -816,10 +911,10 @@ const joinPairing = async (relayUrl, code) => {
           return folder.pairId !== payload.pairId && folder.id !== folderId;
         }),
       ]), { pairId: payload.pairId }),
-      syncJobs: state.syncJobs.filter((job) => job.vaultFolderId === folderId),
+      syncJobs,
       pairing: {
         relayUrl: nextRelayUrl,
-        role: state.pairing.role || 'client',
+        role: 'client',
         status: 'linked',
         pairId: payload.pairId,
         token: payload.token,
@@ -841,10 +936,25 @@ const resetPairing = () => {
     addActivity(
       {
         ...state,
+        folders: isServerApp
+          ? state.folders
+          : state.folders.map((folder) =>
+              folder.vaultRole === 'client'
+                ? makeClientVault({
+                    id: folder.id,
+                    name: folder.name,
+                    path: folder.name,
+                    updatedAt: now(),
+                    status: 'offline',
+                  })
+                : folder
+            ),
+        syncJobs: isServerApp ? state.syncJobs : [],
         pairing: {
           relayUrl: state.pairing.relayUrl || defaultRelayUrl,
-          role: 'client',
+          role: isServerApp ? 'storage' : 'client',
           status: 'idle',
+          storageName: isServerApp ? state.currentDevice.name : '',
         },
       },
       'link',
@@ -854,27 +964,51 @@ const resetPairing = () => {
   );
 };
 
+const cleanVaultName = (value) => String(value || '').trim().replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').slice(0, 80);
+
+const renameVault = (folderId, name) => {
+  const state = ensureState();
+  const cleanName = cleanVaultName(name);
+  if (!cleanName) {
+    throw new Error('Name the vault');
+  }
+
+  const folder = state.folders.find((item) => item.id === folderId);
+  if (!folder || folder.vaultRole !== 'client') {
+    throw new Error('Vault not found');
+  }
+
+  return writeState(
+    addActivity(
+      {
+        ...state,
+        folders: state.folders.map((item) => (item.id === folderId ? { ...item, name: cleanName } : item)),
+      },
+      'vault',
+      cleanName,
+      'Renamed'
+    )
+  );
+};
+
 const setServerMode = async (enabled) => {
+  if (!isServerApp) {
+    throw new Error('Install Nubem Server on the storage PC');
+  }
+
   runUserSystemctl(['daemon-reload']);
-  runUserSystemctl([enabled ? 'enable' : 'disable', '--now', 'nubem-drive-storage.service']);
+  runUserSystemctl([enabled ? 'enable' : 'disable', '--now', storageServiceName]);
   storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
 
   const state = ensureState();
   const relayUrl = state.pairing.relayUrl || defaultRelayUrl;
-  const pairing = enabled
-    ? {
-        relayUrl,
-        role: 'storage',
-        status: 'idle',
-        storageName: state.currentDevice.name,
-        message: '',
-      }
-    : {
-        relayUrl,
-        role: 'client',
-        status: 'idle',
-        message: '',
-      };
+  const pairing = {
+    relayUrl,
+    role: 'storage',
+    status: 'idle',
+    storageName: state.currentDevice.name,
+    message: '',
+  };
 
   return writeState(
     addActivity(
@@ -883,7 +1017,7 @@ const setServerMode = async (enabled) => {
         pairing,
       },
       'link',
-      enabled ? 'Server mode' : 'Client mode',
+      'Server',
       enabled ? 'On' : 'Off'
     )
   );
@@ -1329,7 +1463,7 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
   const requestId = await createRelayRequest('download', folderId, relativePath);
   const result = await waitForVaultRequest(folderId, requestId, 15 * 60 * 1000);
   const saveResult = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save from Nubem Drive',
+    title: `Save from ${appProductName}`,
     defaultPath: result.fileName,
   });
 
@@ -1933,7 +2067,7 @@ const cloudFoldersToDefaultVault = async (folderPaths) => {
 
   if (!vault) {
     focusMainWindow();
-    throw new Error('Join a vault first');
+    throw new Error('Link your vault first');
   }
 
   const result = enqueueUploadJobs(state, vault.id, folderPaths);
@@ -1949,7 +2083,7 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
 
   if (!vault) {
     focusMainWindow();
-    throw new Error('Join a vault first');
+    throw new Error('Link your vault first');
   }
 
   const roots = resolveDirectoryPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
@@ -2195,7 +2329,7 @@ const downloadUpdate = async ({ autoInstall = false } = {}) => {
 
       if (Notification.isSupported()) {
         new Notification({
-          title: 'Nubem Drive',
+          title: appProductName,
           body: autoInstall ? 'Installing update' : 'Update ready',
         }).show();
       }
@@ -2397,7 +2531,7 @@ const notifyClouded = (added) => {
   }
 
   const body = added.length === 1 ? `${added[0].name} queued` : `${added.length} folders queued`;
-  new Notification({ title: 'Nubem Drive', body }).show();
+  new Notification({ title: appProductName, body }).show();
 };
 
 const notifyCloudUploadStarted = (folders) => {
@@ -2406,7 +2540,7 @@ const notifyCloudUploadStarted = (folders) => {
   }
 
   const body = folders.length === 1 ? `Queuing ${folders[0].name}` : `Queuing ${folders.length} folders`;
-  new Notification({ title: 'Nubem Drive', body }).show();
+  new Notification({ title: appProductName, body }).show();
 };
 
 const notifyCloudRemoveStarted = (folders) => {
@@ -2415,7 +2549,7 @@ const notifyCloudRemoveStarted = (folders) => {
   }
 
   const body = folders.length === 1 ? `Removing ${folders[0].name}` : `Removing ${folders.length} folders`;
-  new Notification({ title: 'Nubem Drive', body }).show();
+  new Notification({ title: appProductName, body }).show();
 };
 
 const notifyCloudRemoved = (folders) => {
@@ -2424,7 +2558,7 @@ const notifyCloudRemoved = (folders) => {
   }
 
   const body = folders.length === 1 ? `${folders[0].name} removed` : `${folders.length} folders removed`;
-  new Notification({ title: 'Nubem Drive', body }).show();
+  new Notification({ title: appProductName, body }).show();
 };
 
 const notifyCloudError = (message) => {
@@ -2432,7 +2566,7 @@ const notifyCloudError = (message) => {
     return;
   }
 
-  new Notification({ title: 'Nubem Drive', body: message }).show();
+  new Notification({ title: appProductName, body: message }).show();
 };
 
 function createWindow() {
@@ -2445,7 +2579,7 @@ function createWindow() {
     height: 820,
     minWidth: 1060,
     minHeight: 680,
-    title: 'Nubem Drive',
+    title: appProductName,
     backgroundColor: '#f4f1ea',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -2499,7 +2633,7 @@ const cloudFoldersAndNotify = async (folderPaths) => {
 
   if (state.pairing.role === 'client') {
     focusMainWindow();
-    notifyCloudError('Join a vault before adding folders to Nubem');
+    notifyCloudError('Link your vault before adding folders to Nubem');
     return;
   }
 
@@ -2612,7 +2746,7 @@ app.whenReady().then(async () => {
     const currentState = ensureState();
     const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: clientVault || currentState.pairing.role === 'client' ? 'Add to Nubem' : 'Add vault',
+      title: clientVault || currentState.appMode === 'client' ? 'Add to Nubem' : 'Add storage folder',
       properties: clientVault
         ? ['openFile', 'openDirectory', 'multiSelections']
         : ['openDirectory', 'multiSelections', 'createDirectory'],
@@ -2627,7 +2761,7 @@ app.whenReady().then(async () => {
     }
 
     if (ensureState().pairing.role === 'client') {
-      notifyCloudError('Join a vault before adding folders to Nubem');
+      notifyCloudError('Link your vault before adding folders to Nubem');
       return ensureState();
     }
 
@@ -2722,6 +2856,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('pairing:create-code', (_event, relayUrl) => createPairCode(relayUrl));
   ipcMain.handle('pairing:join', (_event, relayUrl, code) => joinPairing(relayUrl, code));
   ipcMain.handle('vaults:share', (_event, id, relayUrl) => shareVault(id, relayUrl));
+  ipcMain.handle('vaults:rename', (_event, id, name) => renameVault(id, name));
   ipcMain.handle('pairing:refresh', async () => {
     const state = await refreshPairingState();
     wakeSyncProcessor();
