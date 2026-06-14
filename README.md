@@ -38,14 +38,3 @@ Linux packages are built from this machine. Windows installers are built and rel
 ```bash
 npm run dist:linux
 ```
-
-## Codex Handoff Loop
-
-Use GitHub issue `#1` as the shared mailbox between the Linux and Windows Codex sessions.
-
-```bash
-npm run handoff:linux
-npm run handoff:windows
-```
-
-Each side needs `gh` and `codex` logged in. The runner only trusts handoff comments from the authenticated GitHub user unless `HANDOFF_ALLOWED_AUTHORS` is set.
