@@ -1,6 +1,6 @@
 Unicode True
 Name "Nubem Drive"
-OutFile "/home/nando/Documents/cloud/release/Nubem-Drive-Setup-0.0.26-x64.exe"
+OutFile "/home/nando/Documents/cloud/release/Nubem-Drive-Setup-0.0.27-x64.exe"
 InstallDir "$LOCALAPPDATA\Programs\Nubem Drive"
 RequestExecutionLevel user
 
@@ -32,11 +32,13 @@ Section "Install"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\NubemDriveCloud" "Icon" "$INSTDIR\Nubem Drive.exe"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\NubemDriveCloud\command" "" "$\"$INSTDIR\Nubem Drive.exe$\" $\"nubem-cloud-folder:%V$\""
 
+  CreateShortCut "$SENDTO\Add to cloud.lnk" "$INSTDIR\Nubem Drive.exe" "--cloud-folder" "$INSTDIR\Nubem Drive.exe" 0
+
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayName" "Nubem Drive"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayIcon" "$INSTDIR\Nubem Drive.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayVersion" "0.0.26"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive" "DisplayVersion" "0.0.27"
 SectionEnd
 
 Section "Uninstall"
@@ -47,6 +49,7 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Classes\Directory\shell\NubemDriveCloud"
   DeleteRegKey HKCU "Software\Classes\Folder\shell\NubemDriveCloud"
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\NubemDriveCloud"
+  Delete "$SENDTO\Add to cloud.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NubemDrive"
 
   RMDir /r "$INSTDIR"
