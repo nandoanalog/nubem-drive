@@ -21,7 +21,6 @@ import {
   Search,
   Trash2,
   UploadCloud,
-  Wifi,
   X,
 } from 'lucide-react'
 import './App.css'
@@ -89,18 +88,19 @@ const statusCopy: Record<FolderStatus, string> = {
 }
 
 type ConnectionTone = 'connected' | 'connecting' | 'waiting' | 'error' | 'offline' | 'idle'
-
-function clientVaults(state: AppState) {
-  return state.folders.filter((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token)
-}
-
-function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): {
+type ConnectionSummary = {
   actionLabel: string
   detail: string
   icon: typeof Cloud
   title: string
   tone: ConnectionTone
-} {
+}
+
+function clientVaults(state: AppState) {
+  return state.folders.filter((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token)
+}
+
+function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): ConnectionSummary {
   if (busy === 'join') {
     return {
       actionLabel: 'Link',
@@ -121,6 +121,28 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
     }
   }
 
+  const joinedVaults = clientVaults(state)
+  if (joinedVaults.length > 0) {
+    const vaultLabel = joinedVaults[0].name
+    if (state.pairing.status === 'error' || state.pairing.status === 'offline') {
+      return {
+        actionLabel: 'Details',
+        detail: 'Retrying automatically',
+        icon: RefreshCcw,
+        title: 'Reconnecting to Nubem',
+        tone: 'connecting',
+      }
+    }
+
+    return {
+      actionLabel: 'Details',
+      detail: `Vault: ${vaultLabel}`,
+      icon: CheckCircle2,
+      title: 'Connected to Nubem',
+      tone: 'connected',
+    }
+  }
+
   if (state.pairing.status === 'error') {
     return {
       actionLabel: 'Fix',
@@ -128,19 +150,6 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
       icon: AlertTriangle,
       title: 'Connection failed',
       tone: 'error',
-    }
-  }
-
-  const joinedVaults = clientVaults(state)
-  if (joinedVaults.length > 0) {
-    const vaultLabel = joinedVaults.length === 1 ? joinedVaults[0].name : `${joinedVaults.length} vaults`
-
-    return {
-      actionLabel: 'Details',
-      detail: joinedVaults.length === 1 ? `Vault: ${vaultLabel}` : `${vaultLabel} linked`,
-      icon: CheckCircle2,
-      title: 'Connected to Nubem',
-      tone: 'connected',
     }
   }
 
@@ -182,6 +191,7 @@ function formatPairCode(value?: string) {
 function pairingLine(state: AppState) {
   const joined = state.folders.filter((folder) => folder.vaultRole === 'client').length
   const shared = state.folders.filter((folder) => folder.vaultRole !== 'client').length
+  if (joined > 0 && (state.pairing.status === 'error' || state.pairing.status === 'offline')) return 'Reconnecting'
   if (joined > 0) return joined === 1 ? 'Connected' : `${joined} vaults connected`
   if (shared > 0) return shared === 1 ? 'Sharing 1 vault' : `Sharing ${shared} vaults`
   if (state.pairing.status === 'error') return 'Check host'
@@ -563,23 +573,10 @@ function App() {
           {currentRole.label}
         </div>
 
-        <div className="relay-pill" title="Relay ready" aria-label="Relay ready">
-          <Wifi size={15} />
-        </div>
-
-        <section className="device-summary" aria-label="Devices">
-          {state.devices.map((device) => (
-            <div
-              className="device-row compact"
-              key={device.id}
-              title={`${device.name} - ${deviceRoleLabel(device.role)}`}
-              aria-label={`${device.name} - ${deviceRoleLabel(device.role)}`}
-            >
-              <Laptop size={16} />
-              <span className={`device-dot ${device.status}`} />
-            </div>
-          ))}
-        </section>
+        <SidebarConnectionIndicator
+          connection={connection}
+          onOpen={() => setIsPairPanelOpen(true)}
+        />
 
         <div className="version-chip" title={versionTitle(state)}>
           v{state.updates.currentVersion}
@@ -1013,6 +1010,29 @@ function ConnectionStrip({
         <span>{connection.actionLabel}</span>
       </button>
     </section>
+  )
+}
+
+function SidebarConnectionIndicator({
+  connection,
+  onOpen,
+}: {
+  connection: ConnectionSummary
+  onOpen: () => void
+}) {
+  const Icon = connection.icon
+
+  return (
+    <button
+      className={`sidebar-connection ${connection.tone}`}
+      onClick={onOpen}
+      title={`${connection.title}: ${connection.detail}`}
+      aria-label={`${connection.title}: ${connection.detail}`}
+      type="button"
+    >
+      <Icon size={18} />
+      <span className="sidebar-connection-dot" />
+    </button>
   )
 }
 

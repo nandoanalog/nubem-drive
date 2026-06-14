@@ -12,6 +12,7 @@ let mainWindow;
 let heartbeatTimer;
 let updateTimer;
 let updateWork;
+let pairingRefreshWork;
 let syncTimer;
 let syncWork;
 let syncWorkStartedAt = 0;
@@ -588,15 +589,17 @@ const applyRelaySnapshot = (state, payload, status = 'linked') => {
   }));
 };
 
-const markRelayError = (state, message) =>
-  writeState({
+const markRelayError = (state, message) => {
+  const hasClientVault = state.folders.some((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
+  return writeState({
     ...state,
     pairing: {
       ...state.pairing,
-      status: 'error',
+      status: hasClientVault ? 'offline' : 'error',
       message,
     },
   });
+};
 
 const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
   writeState(applyAllVaultSyncStatuses({
@@ -681,52 +684,64 @@ const ensureStorageVaultsShared = async () => {
 };
 
 const refreshPairingState = async () => {
-  let state = await ensureStorageVaultsShared();
-  const vaults = state.folders.filter((folder) => folder.pairId && folder.token);
-
-  if (vaults.length === 0 && (!state.pairing.pairId || !state.pairing.token)) {
-    return state;
+  if (pairingRefreshWork) {
+    return pairingRefreshWork;
   }
 
-  for (const folder of vaults) {
-    try {
-      const payload = await relayRequest(folder.relayUrl || defaultRelayUrl, '/api/drive/heartbeat', {
-        pairId: folder.pairId,
-        token: folder.token,
-        device: localRelayDevice(state, folder.vaultRole || 'storage'),
-        folders: folder.vaultRole === 'storage' ? [publicVaultFolder(state, folder)] : undefined,
-      });
-      state = applyVaultPayloadToFolder(state, folder.id, payload, folder.vaultRole || 'storage');
-      if (folder.vaultRole === 'storage') {
-        handlePendingRelayRequests(folder.id).catch(() => undefined);
-      }
-    } catch (error) {
-      state = writeState({
-        ...ensureState(),
-        folders: ensureState().folders.map((item) =>
-          item.id === folder.id
-            ? { ...item, status: 'offline', updatedAt: now() }
-            : item
-        ),
-      });
+  pairingRefreshWork = (async () => {
+    let state = await ensureStorageVaultsShared();
+    const vaults = state.folders.filter((folder) => folder.pairId && folder.token);
+
+    if (vaults.length === 0 && (!state.pairing.pairId || !state.pairing.token)) {
+      return state;
     }
-  }
 
-  if (!state.pairing.pairId || !state.pairing.token) {
-    return state;
-  }
+    for (const folder of vaults) {
+      try {
+        const payload = await relayRequest(folder.relayUrl || defaultRelayUrl, '/api/drive/heartbeat', {
+          pairId: folder.pairId,
+          token: folder.token,
+          device: localRelayDevice(state, folder.vaultRole || 'storage'),
+          folders: folder.vaultRole === 'storage' ? [publicVaultFolder(state, folder)] : undefined,
+        });
+        state = applyVaultPayloadToFolder(state, folder.id, payload, folder.vaultRole || 'storage');
+        if (folder.vaultRole === 'storage') {
+          handlePendingRelayRequests(folder.id).catch(() => undefined);
+        }
+      } catch {
+        state = writeState({
+          ...ensureState(),
+          folders: ensureState().folders.map((item) =>
+            item.id === folder.id
+              ? { ...item, status: 'offline', updatedAt: now() }
+              : item
+          ),
+        });
+      }
+    }
+
+    if (!state.pairing.pairId || !state.pairing.token) {
+      return state;
+    }
+
+    try {
+      const payload = await relayRequest(state.pairing.relayUrl, '/api/drive/heartbeat', {
+        pairId: state.pairing.pairId,
+        token: state.pairing.token,
+        device: localRelayDevice(state),
+        folders: state.pairing.role === 'storage' ? publicCloudFolders(state) : undefined,
+      });
+      const nextState = applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
+      return nextState;
+    } catch (error) {
+      return markRelayError(state, error instanceof Error ? error.message : 'Relay offline');
+    }
+  })();
 
   try {
-    const payload = await relayRequest(state.pairing.relayUrl, '/api/drive/heartbeat', {
-      pairId: state.pairing.pairId,
-      token: state.pairing.token,
-      device: localRelayDevice(state),
-      folders: state.pairing.role === 'storage' ? publicCloudFolders(state) : undefined,
-    });
-    const nextState = applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
-    return nextState;
-  } catch (error) {
-    return markRelayError(state, error instanceof Error ? error.message : 'Relay offline');
+    return await pairingRefreshWork;
+  } finally {
+    pairingRefreshWork = null;
   }
 };
 

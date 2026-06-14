@@ -157,22 +157,6 @@ button:disabled {
   background: #2f6fbe;
 }
 
-.relay-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 28px;
-  width: 28px;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid #b9ded4;
-  border-radius: 7px;
-  color: #0e5f59;
-  background: #e5f5ef;
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .workspace {
   display: flex;
   min-width: 0;
@@ -1299,11 +1283,6 @@ button:disabled {
   font-weight: 750;
 }
 
-.device-summary {
-  display: grid;
-  gap: 7px;
-}
-
 .version-chip {
   margin-top: auto;
   max-width: 64px;
@@ -1321,39 +1300,66 @@ button:disabled {
   white-space: nowrap;
 }
 
-.device-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 48px;
-  padding: 8px 9px;
-  border: 1px solid #e2dcd0;
-  border-radius: 8px;
-  background: #fffdf8;
-}
-
-.device-row.compact {
-  justify-content: center;
+.sidebar-connection {
+  position: relative;
+  display: grid;
   width: 44px;
-  min-height: 38px;
-  padding: 0;
+  height: 40px;
+  place-items: center;
+  border: 1px solid #d9d3c8;
+  border-radius: 8px;
+  color: #4d5652;
   background: #fffdf8;
+  cursor: pointer;
 }
 
-.device-dot {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 auto;
+.sidebar-connection.connected {
+  border-color: #b9ded4;
+  color: #0f6f64;
+  background: #e5f5ef;
+}
+
+.sidebar-connection.connecting,
+.sidebar-connection.waiting {
+  border-color: #b9cdf0;
+  color: #275ea7;
+  background: #e7f0ff;
+}
+
+.sidebar-connection.error,
+.sidebar-connection.offline {
+  border-color: #efb0a3;
+  color: #a43b2d;
+  background: #fff1ed;
+}
+
+.sidebar-connection.connecting svg {
+  animation: soft-spin 1s linear infinite;
+}
+
+.sidebar-connection-dot {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fffdf8;
   border-radius: 999px;
   background: #9ca3af;
 }
 
-.device-dot.online {
+.sidebar-connection.connected .sidebar-connection-dot {
   background: #10a37f;
 }
 
-.device-dot.sleeping {
-  background: #d9981f;
+.sidebar-connection.connecting .sidebar-connection-dot,
+.sidebar-connection.waiting .sidebar-connection-dot {
+  background: #2f6fbe;
+}
+
+.sidebar-connection.error .sidebar-connection-dot,
+.sidebar-connection.offline .sidebar-connection-dot {
+  background: #b84636;
 }
 
 .empty-state {
