@@ -1409,6 +1409,16 @@ const addVaultsFromPaths = async (folderPaths, detail = 'Vault added') => {
 };
 
 const getCloudFolderArgs = (argv = process.argv) => {
+  const prefix = 'nubem-cloud-folder:';
+  const prefixed = argv
+    .filter((item) => typeof item === 'string' && item.startsWith(prefix))
+    .map((item) => item.slice(prefix.length))
+    .filter(Boolean);
+
+  if (prefixed.length > 0) {
+    return prefixed;
+  }
+
   const marker = argv.indexOf('--cloud-folder');
   if (marker === -1) {
     return [];

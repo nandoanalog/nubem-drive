@@ -6,8 +6,12 @@ mkdir -p /usr/share/nemo/actions
 find /home /root -path '*/.local/share/nemo/actions/nubem-cloud-folder.nemo_action' -type f -delete 2>/dev/null || true
 
 cat > /usr/bin/nubem-drive-cloud-folder <<'EOF'
-#!/bin/sh
-exec "/opt/Nubem Drive/nubem-drive" --cloud-folder "$@"
+#!/bin/bash
+args=()
+for folder in "$@"; do
+  args+=("nubem-cloud-folder:$folder")
+done
+exec "/opt/Nubem Drive/nubem-drive" "${args[@]}"
 EOF
 
 chmod 755 /usr/bin/nubem-drive-cloud-folder
