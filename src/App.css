@@ -74,6 +74,39 @@ button:disabled {
   box-shadow: 0 10px 26px rgba(15, 118, 110, 0.22);
 }
 
+.role-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  min-height: 24px;
+  padding: 0 7px;
+  border: 1px solid #d7d0c5;
+  border-radius: 7px;
+  background: #fffdf8;
+  color: #403b34;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.role-pill.server {
+  border-color: #b9ded4;
+  background: #e5f5ef;
+  color: #0e5f59;
+}
+
+.role-pill.client {
+  border-color: #c7d8f3;
+  background: #edf4ff;
+  color: #24508d;
+}
+
+.role-pill.both {
+  border-color: #d9c9f2;
+  background: #f3edff;
+  color: #5d3f8f;
+}
+
 .icon-button,
 .primary-button,
 .mode-option,

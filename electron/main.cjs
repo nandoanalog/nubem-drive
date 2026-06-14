@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Notification, dialog, ipcMain, shell } = require('electron');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -14,6 +14,7 @@ let updateTimer;
 let updateWork;
 let syncTimer;
 let syncWork;
+let storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
 
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
 const defaultRelayUrl = 'https://drive.nubem.org';
@@ -94,6 +95,31 @@ const relayStatusFromPairing = (pairing) => {
   if (pairing?.status === 'error') return 'limited';
   if (pairing?.status === 'ready') return 'ready';
   return 'offline';
+};
+
+const storageServiceStatus = () => {
+  if (process.platform !== 'linux') {
+    return 'offline';
+  }
+
+  if (Date.now() - storageServiceStatusCache.checkedAt < 5000) {
+    return storageServiceStatusCache.value;
+  }
+
+  try {
+    const result = spawnSync('systemctl', ['--user', 'is-active', 'nubem-drive-storage.service'], {
+      encoding: 'utf8',
+      timeout: 1500,
+    });
+    storageServiceStatusCache = {
+      checkedAt: Date.now(),
+      value: result.stdout.trim() === 'active' ? 'online' : 'offline',
+    };
+    return storageServiceStatusCache.value;
+  } catch {
+    storageServiceStatusCache = { checkedAt: Date.now(), value: 'offline' };
+    return 'offline';
+  }
 };
 
 const normalizeSyncFile = (file = {}) => ({
@@ -177,6 +203,7 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
     storageNode: {
       ...fresh.storageNode,
       ...(state.storageNode || {}),
+      status: storageServiceStatus(),
       relayStatus: relayStatusFromPairing(pairing),
     },
     currentDevice,

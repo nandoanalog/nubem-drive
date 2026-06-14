@@ -105,6 +105,27 @@ function pairingLine(state: AppState) {
   return 'No vaults'
 }
 
+function roleBadge(state: AppState) {
+  const hasClientVault = state.folders.some((folder) => folder.vaultRole === 'client')
+  const hasStorageVault = state.folders.some((folder) => folder.vaultRole !== 'client')
+  const isServer = state.storageNode.status === 'online' || hasStorageVault || state.pairing.role === 'storage'
+  const isClient = hasClientVault || state.pairing.role === 'client'
+
+  if (isServer && isClient) {
+    return { label: 'Both', title: 'Server and client', className: 'both' }
+  }
+
+  if (isServer) {
+    return { label: 'Server', title: 'Server PC', className: 'server' }
+  }
+
+  if (isClient) {
+    return { label: 'Client', title: 'Client PC', className: 'client' }
+  }
+
+  return { label: 'Setup', title: 'No role yet', className: 'setup' }
+}
+
 const statusIcons: Record<FolderStatus, typeof Cloud> = {
   synced: CheckCircle2,
   syncing: RefreshCcw,
@@ -219,6 +240,7 @@ function App() {
   const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
   const selectedFolderId = selectedFolder?.id
   const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
+  const currentRole = roleBadge(state)
 
   useEffect(() => {
     let active = true
@@ -419,6 +441,10 @@ function App() {
           <div className="brand-mark">
             <Cloud size={22} strokeWidth={2.4} />
           </div>
+        </div>
+
+        <div className={`role-pill ${currentRole.className}`} title={currentRole.title} aria-label={currentRole.title}>
+          {currentRole.label}
         </div>
 
         <section className="storage-panel" aria-label="Storage">
