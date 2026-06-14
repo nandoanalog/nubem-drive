@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'code' | 'join' | 'reset' | 'server' | null
@@ -238,6 +238,12 @@ function App() {
   const selectedFolder = state.folders.find((folder) => folder.id === selectedId) || folders[0] || state.folders[0]
   const selectedFolderId = selectedFolder?.id
   const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
+  const selectedSyncJobs = useMemo(() => {
+    if (!selectedFolderId) return []
+    return state.syncJobs
+      .filter((job) => job.vaultFolderId === selectedFolderId)
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+  }, [selectedFolderId, state.syncJobs])
   const currentRole = roleBadge(state)
 
   useEffect(() => {
@@ -645,6 +651,8 @@ function App() {
                   <span title="Devices">{selectedFolder.devices.length}</span>
                 </div>
 
+                {selectedIsClientVault ? <SyncProgressPanel jobs={selectedSyncJobs} /> : null}
+
                 {selectedFolder.code && !selectedIsClientVault ? <button className="vault-code" onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}>{selectedFolder.code}</button> : null}
 
                 {!selectedIsClientVault ? (
@@ -809,6 +817,43 @@ function RemoteBrowser({
           </div>
         ))}
       </div>
+    </section>
+  )
+}
+
+function SyncProgressPanel({ jobs }: { jobs: SyncJob[] }) {
+  if (jobs.length === 0) return null
+
+  return (
+    <section className="sync-progress-panel" aria-label="Sync progress">
+      <div className="sync-progress-head">
+        <UploadCloud size={16} />
+        <strong>Sync</strong>
+      </div>
+      {jobs.slice(0, 4).map((job) => {
+        const total = Math.max(job.totalFiles, job.files.length, 0)
+        const completed = job.completedFiles
+        const percent = total === 0 ? 100 : Math.round((completed / total) * 100)
+        const currentFile = job.files.find((file) => file.status !== 'done')
+        const status = job.lastError || currentFile?.error || (job.status === 'complete' ? 'Complete' : currentFile?.relativePath || statusCopy.syncing)
+        const statusLabel = job.status === 'running' ? 'Syncing' : job.status === 'queued' ? 'Queued' : job.status === 'complete' ? 'Synced' : 'Error'
+
+        return (
+          <div className={`sync-job ${job.status}`} key={job.id}>
+            <div className="sync-job-title">
+              <strong title={job.rootPath}>{job.rootName}</strong>
+              <span>{completed}/{total}</span>
+            </div>
+            <div className="sync-job-bar" aria-label={`${job.rootName} ${percent}%`}>
+              <span style={{ width: `${percent}%` }} />
+            </div>
+            <div className="sync-job-detail" title={status}>
+              <span>{statusLabel}</span>
+              <span>{status}</span>
+            </div>
+          </div>
+        )
+      })}
     </section>
   )
 }

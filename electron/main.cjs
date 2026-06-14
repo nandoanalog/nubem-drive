@@ -1678,7 +1678,7 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
     throw new Error('Folder is not clouded');
   }
 
-  const uniqueRoots = Array.from(new Map(matches.map((job) => [job.rootName, job])).values());
+  const uniqueRoots = Array.from(new Map(matches.map((job) => [path.resolve(job.rootPath), job])).values());
   const label = uniqueRoots.length === 1 ? uniqueRoots[0].rootName : `${uniqueRoots.length} folders`;
   const result = await dialog.showMessageBox(createWindow(), {
     type: 'warning',
@@ -1695,7 +1695,11 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
   }
 
   for (const job of uniqueRoots) {
-    await deleteVaultRelativePath(vault.id, job.rootName, 120_000);
+    const rootMatches = matches.filter((match) => path.resolve(match.rootPath) === path.resolve(job.rootPath));
+    const hasRemoteFiles = rootMatches.some((match) => match.status !== 'queued' || syncJobProgress(match).completedFiles > 0);
+    if (hasRemoteFiles) {
+      await deleteVaultRelativePath(vault.id, job.rootName, 120_000);
+    }
   }
 
   state = ensureState();
@@ -2090,6 +2094,8 @@ const getCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-c
 
 const getRemoveCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-remove-folder:', '--remove-cloud-folder');
 
+const getToggleCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-toggle-folder:', '--toggle-cloud-folder');
+
 const notifyClouded = (added) => {
   if (!Notification.isSupported()) {
     return;
@@ -2226,6 +2232,36 @@ const removeCloudFoldersAndNotify = async (folderPaths) => {
   }
 };
 
+const toggleCloudFoldersAndNotify = async (folderPaths) => {
+  const state = ensureState();
+  const vault = findDefaultClientVault(state);
+
+  if (!vault) {
+    await cloudFoldersAndNotify(folderPaths);
+    return;
+  }
+
+  const roots = resolveDirectoryPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
+  if (roots.length === 0) {
+    notifyCloudError('Select a folder');
+    return;
+  }
+
+  const cloudedRoots = new Set(
+    state.syncJobs
+      .filter((job) => job.vaultFolderId === vault.id)
+      .map((job) => path.resolve(job.rootPath))
+  );
+  const allClouded = roots.every((root) => cloudedRoots.has(root));
+
+  if (allClouded) {
+    await removeCloudFoldersAndNotify(folderPaths);
+    return;
+  }
+
+  await cloudFoldersAndNotify(roots.filter((root) => !cloudedRoots.has(root)));
+};
+
 const singleInstanceLock = app.requestSingleInstanceLock();
 
 if (!singleInstanceLock) {
@@ -2234,8 +2270,15 @@ if (!singleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const cloudFolderArgs = getCloudFolderArgs(argv);
     const removeCloudFolderArgs = getRemoveCloudFolderArgs(argv);
+    const toggleCloudFolderArgs = getToggleCloudFolderArgs(argv);
 
     app.whenReady().then(async () => {
+      if (toggleCloudFolderArgs.length > 0) {
+        await toggleCloudFoldersAndNotify(toggleCloudFolderArgs);
+        focusMainWindow();
+        return;
+      }
+
       if (removeCloudFolderArgs.length > 0) {
         await removeCloudFoldersAndNotify(removeCloudFolderArgs);
         focusMainWindow();
@@ -2260,6 +2303,7 @@ app.whenReady().then(async () => {
 
   const startupCloudFolderArgs = getCloudFolderArgs();
   const startupRemoveCloudFolderArgs = getRemoveCloudFolderArgs();
+  const startupToggleCloudFolderArgs = getToggleCloudFolderArgs();
 
   ipcMain.handle('app:get-state', () => {
     refreshPairingState().catch(() => undefined);
@@ -2395,6 +2439,11 @@ app.whenReady().then(async () => {
   scheduleUpdateChecks();
   startSyncProcessor();
   createWindow();
+
+  if (startupToggleCloudFolderArgs.length > 0) {
+    await toggleCloudFoldersAndNotify(startupToggleCloudFolderArgs);
+    focusMainWindow();
+  }
 
   if (startupRemoveCloudFolderArgs.length > 0) {
     await removeCloudFoldersAndNotify(startupRemoveCloudFolderArgs);

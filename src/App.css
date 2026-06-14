@@ -791,6 +791,85 @@ button:disabled {
   font-weight: 750;
 }
 
+.sync-progress-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #ded8ce;
+  border-radius: 8px;
+  background: #faf7ef;
+}
+
+.sync-progress-head,
+.sync-job-title,
+.sync-job-detail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sync-progress-head {
+  justify-content: flex-start;
+  color: #2d3834;
+}
+
+.sync-progress-head strong,
+.sync-job-title strong,
+.sync-job-title span,
+.sync-job-detail span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-job {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sync-job-title strong {
+  color: #242927;
+  font-size: 13px;
+}
+
+.sync-job-title span,
+.sync-job-detail {
+  color: #68716d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sync-job-detail span:last-child {
+  flex: 1;
+  text-align: right;
+}
+
+.sync-job-bar {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e3ded5;
+}
+
+.sync-job-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2f6fbe;
+}
+
+.sync-job.complete .sync-job-bar span {
+  background: #0f766e;
+}
+
+.sync-job.error .sync-job-bar span {
+  background: #b84636;
+}
+
 .control-section {
   padding-top: 12px;
   border-top: 1px solid #ece6da;
