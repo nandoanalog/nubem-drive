@@ -1,7 +1,7 @@
 {
   "name": "nubem-drive",
   "private": true,
-  "version": "0.0.30",
+  "version": "0.0.36",
   "description": "Private folder cloud desktop app.",
   "author": "Nando <nando@nubem.org>",
   "homepage": "https://drive.nubem.org",

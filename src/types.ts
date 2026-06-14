@@ -115,6 +115,7 @@ export type SyncFile = {
   modifiedAt: string
   status: 'pending' | 'done' | 'error'
   attempts: number
+  uploadedBytes: number
   error: string
 }
 

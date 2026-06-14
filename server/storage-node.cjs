@@ -163,18 +163,66 @@ const relayRequest = async (relayUrl, endpoint, body) => {
   }
 };
 
-const publicVaultFolder = (state, folder) => ({
-  id: folder.id,
-  name: folder.name,
-  path: folder.name,
-  sizeLabel: folder.sizeLabel === 'Scanning' ? 'Cloud' : folder.sizeLabel,
-  itemCount: folder.itemCount,
-  updatedAt: folder.updatedAt,
-  status: folder.status === 'paused' ? 'paused' : 'synced',
-  localMode: 'online',
-  devices: [state.currentDevice.name],
-  progress: 100,
-});
+const summarizeLocalFolder = (folder) => {
+  let itemCount = 0;
+  let totalBytes = 0;
+  let latestModifiedAt = folder.updatedAt || now();
+  const stack = [folder.path];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(current, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+
+        if (stat.isFile()) {
+          itemCount += 1;
+          totalBytes += stat.size;
+          if (stat.mtime.getTime() > new Date(latestModifiedAt || 0).getTime()) {
+            latestModifiedAt = stat.mtime.toISOString();
+          }
+        }
+      } catch {
+        // Ignore files that disappear while the folder is being summarized.
+      }
+    }
+  }
+
+  return {
+    itemCount,
+    sizeLabel: formatBytes(totalBytes),
+    updatedAt: latestModifiedAt,
+  };
+};
+
+const publicVaultFolder = (state, folder) => {
+  const summary = summarizeLocalFolder(folder);
+  return {
+    id: folder.id,
+    name: folder.name,
+    path: folder.name,
+    sizeLabel: summary.sizeLabel,
+    itemCount: summary.itemCount,
+    updatedAt: summary.updatedAt,
+    status: folder.status === 'paused' ? 'paused' : 'synced',
+    localMode: 'online',
+    devices: [state.currentDevice.name],
+    progress: 100,
+  };
+};
 
 const applyVaultPayloadToFolder = (state, folderId, payload) =>
   writeState({

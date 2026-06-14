@@ -636,8 +636,8 @@ function App() {
                     <button
                       className="danger-action"
                       onClick={() => removeFolder(selectedFolder)}
-                      title="Remove from cloud"
-                      aria-label="Remove from cloud"
+                      title="Remove from Nubem"
+                      aria-label="Remove from Nubem"
                     >
                       <Trash2 size={15} />
                     </button>
@@ -833,8 +833,11 @@ function SyncProgressPanel({ jobs }: { jobs: SyncJob[] }) {
       {jobs.slice(0, 4).map((job) => {
         const total = Math.max(job.totalFiles, job.files.length, 0)
         const completed = job.completedFiles
-        const percent = total === 0 ? 100 : Math.round((completed / total) * 100)
         const currentFile = job.files.find((file) => file.status !== 'done')
+        const activeFileProgress = currentFile && currentFile.sizeBytes > 0
+          ? Math.min(Math.max(currentFile.uploadedBytes / currentFile.sizeBytes, 0), 1)
+          : 0
+        const percent = total === 0 ? 100 : Math.round(((completed + activeFileProgress) / total) * 100)
         const status = job.lastError || currentFile?.error || (job.status === 'complete' ? 'Complete' : currentFile?.relativePath || statusCopy.syncing)
         const statusLabel = job.status === 'running' ? 'Syncing' : job.status === 'queued' ? 'Queued' : job.status === 'complete' ? 'Synced' : 'Error'
 

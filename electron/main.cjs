@@ -14,6 +14,7 @@ let updateTimer;
 let updateWork;
 let syncTimer;
 let syncWork;
+let syncWorkStartedAt = 0;
 let storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
 
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
@@ -144,6 +145,7 @@ const normalizeSyncFile = (file = {}) => ({
   modifiedAt: String(file.modifiedAt || ''),
   status: ['pending', 'done', 'error'].includes(file.status) ? file.status : 'pending',
   attempts: Number.isFinite(file.attempts) ? file.attempts : 0,
+  uploadedBytes: Number.isFinite(file.uploadedBytes) ? file.uploadedBytes : 0,
   error: String(file.error || ''),
 });
 
@@ -341,32 +343,69 @@ const formatBytes = (bytes) => {
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 };
 
+const summarizeLocalFolder = (folder) => {
+  let itemCount = 0;
+  let totalBytes = 0;
+  let latestModifiedAt = folder.updatedAt || now();
+  const stack = [folder.path];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(current, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+
+        if (stat.isFile()) {
+          itemCount += 1;
+          totalBytes += stat.size;
+          if (stat.mtime.getTime() > new Date(latestModifiedAt || 0).getTime()) {
+            latestModifiedAt = stat.mtime.toISOString();
+          }
+        }
+      } catch {
+        // Ignore files that disappear while the folder is being summarized.
+      }
+    }
+  }
+
+  return {
+    itemCount,
+    sizeLabel: formatBytes(totalBytes),
+    updatedAt: latestModifiedAt,
+  };
+};
+
 const publicCloudFolders = (state) =>
-  state.folders.map((folder) => ({
+  state.folders.map((folder) => publicVaultFolder(state, folder));
+
+const publicVaultFolder = (state, folder) => {
+  const summary = summarizeLocalFolder(folder);
+  return {
     id: folder.id,
     name: folder.name,
     path: folder.name,
-    sizeLabel: folder.sizeLabel === 'Scanning' ? 'Cloud' : folder.sizeLabel,
-    itemCount: folder.itemCount,
-    updatedAt: folder.updatedAt,
+    sizeLabel: summary.sizeLabel,
+    itemCount: summary.itemCount,
+    updatedAt: summary.updatedAt,
     status: folder.status === 'paused' ? 'paused' : 'synced',
     localMode: 'online',
     devices: [state.currentDevice.name],
     progress: 100,
-  }));
-
-const publicVaultFolder = (state, folder) => ({
-  id: folder.id,
-  name: folder.name,
-  path: folder.name,
-  sizeLabel: folder.sizeLabel === 'Scanning' ? 'Cloud' : folder.sizeLabel,
-  itemCount: folder.itemCount,
-  updatedAt: folder.updatedAt,
-  status: folder.status === 'paused' ? 'paused' : 'synced',
-  localMode: 'online',
-  devices: [state.currentDevice.name],
-  progress: 100,
-});
+  };
+};
 
 const remoteFoldersFromPayload = (payload) =>
   Array.isArray(payload.folders)
@@ -412,12 +451,12 @@ const applyRelaySnapshot = (state, payload, status = 'linked') => {
     delete nextPairing.pairCodeExpiresAt;
   }
 
-  return writeState({
+  return writeState(applyAllVaultSyncStatuses({
     ...state,
     pairing: nextPairing,
     devices,
     folders: remoteFolders || state.folders,
-  });
+  }));
 };
 
 const markRelayError = (state, message) =>
@@ -431,7 +470,7 @@ const markRelayError = (state, message) =>
   });
 
 const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
-  writeState({
+  writeState(applyAllVaultSyncStatuses({
     ...state,
     folders: state.folders.map((folder) => {
       if (folder.id !== folderId) return folder;
@@ -463,7 +502,7 @@ const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
     devices: Array.isArray(payload.devices)
       ? payload.devices.map((device) => mapRelayDevice(device, state.currentDevice.id))
       : state.devices,
-  });
+  }));
 
 const shareVault = async (folderId, relayUrl = defaultRelayUrl) => {
   const state = ensureState();
@@ -1239,6 +1278,13 @@ const deleteRemoteEntry = async (folderId, relativePath = '') => {
 
 const findDefaultClientVault = (state) => state.folders.find((folder) => folder.vaultRole === 'client' && folder.pairId && folder.token);
 
+const isStorageDevice = (device) => {
+  const role = String(device?.role || '').toLowerCase();
+  return role.includes('storage') || role === 'server';
+};
+
+const isVaultStorageOnline = (state) => state.devices.some((device) => isStorageDevice(device) && device.status === 'online');
+
 const walkFiles = (root) => {
   const files = [];
   const visit = (target) => {
@@ -1281,7 +1327,7 @@ const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalB
   return payload.requestId;
 };
 
-const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, metadata = {}) => {
+const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, metadata = {}, onProgress = () => undefined) => {
   const stat = fs.statSync(sourceFile);
   const chunkSize = relayChunkSize;
   const chunkCount = Math.max(1, Math.ceil(stat.size / chunkSize));
@@ -1306,9 +1352,11 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, 
       await uploadRelayChunk(vaultFolderId, requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
       offset += bytesRead;
       index += 1;
+      onProgress(offset, stat.size);
     }
 
     await markUploadReady(vaultFolderId, requestId);
+    onProgress(stat.size, stat.size);
     return await waitForVaultRequest(vaultFolderId, requestId, 15 * 60 * 1000);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Upload failed';
@@ -1395,6 +1443,11 @@ const applyVaultSyncStatus = (state, vaultFolderId) => {
   };
 };
 
+const applyAllVaultSyncStatuses = (state) => {
+  const vaultFolderIds = Array.from(new Set(state.syncJobs.map((job) => job.vaultFolderId).filter(Boolean)));
+  return vaultFolderIds.reduce((nextState, vaultFolderId) => applyVaultSyncStatus(nextState, vaultFolderId), state);
+};
+
 const updateSyncJob = (jobId, updater) => {
   const state = ensureState();
   let changedJob = null;
@@ -1429,6 +1482,7 @@ const markSyncFileDone = (jobId, file, patch = {}) =>
       ...patch,
       status: 'done',
       error: '',
+      uploadedBytes: Number(file.sizeBytes || 0),
     },
     {
       lastError: '',
@@ -1445,6 +1499,7 @@ const markSyncFileRetry = (jobId, file, message) => {
     {
       status: 'pending',
       attempts,
+      uploadedBytes: 0,
       error: message,
     },
     {
@@ -1543,6 +1598,8 @@ const nextRunnableSyncJob = () => {
   });
 };
 
+const hasRunningSyncJob = (state = ensureState()) => state.syncJobs.some((job) => job.status === 'running');
+
 const processUploadJob = async (jobId) => {
   let state = updateSyncJob(jobId, (job) => ({
     ...job,
@@ -1565,6 +1622,20 @@ const processUploadJob = async (jobId) => {
         status: 'error',
         lastError: 'Vault not linked',
         nextAttemptAt: '',
+      }));
+    }
+
+    if (!isVaultStorageOnline(state)) {
+      return updateSyncJob(jobId, (current) => ({
+        ...current,
+        status: 'queued',
+        lastError: 'Storage PC is offline',
+        nextAttemptAt: new Date(Date.now() + 30_000).toISOString(),
+        files: current.files.map((item) =>
+          item.status !== 'done' && item.relativePath === current.files.find((file) => file.status !== 'done')?.relativePath
+            ? { ...item, uploadedBytes: 0, error: 'Waiting for Storage PC' }
+            : item
+        ),
       }));
     }
 
@@ -1594,11 +1665,23 @@ const processUploadJob = async (jobId) => {
       updateSyncFile(jobId, file.relativePath, {
         sizeBytes: currentFile.sizeBytes,
         modifiedAt: currentFile.modifiedAt,
+        uploadedBytes: 0,
         error: '',
       });
 
       if (!(await remoteFileMatches(job.vaultFolderId, currentFile))) {
-        await uploadFileToVault(job.vaultFolderId, currentFile.sourcePath, currentFile.relativePath, currentFile);
+        await uploadFileToVault(
+          job.vaultFolderId,
+          currentFile.sourcePath,
+          currentFile.relativePath,
+          currentFile,
+          (uploadedBytes, totalBytes) => {
+            updateSyncFile(job.id, currentFile.relativePath, {
+              uploadedBytes,
+              error: `Uploading ${formatBytes(uploadedBytes)} of ${formatBytes(totalBytes)}`,
+            });
+          }
+        );
       }
 
       markSyncFileDone(jobId, currentFile, {
@@ -1616,6 +1699,7 @@ const processUploadJob = async (jobId) => {
 const processUploadJobs = async () => {
   if (syncWork) return syncWork;
 
+  syncWorkStartedAt = Date.now();
   syncWork = (async () => {
     while (true) {
       const job = nextRunnableSyncJob();
@@ -1627,21 +1711,55 @@ const processUploadJobs = async () => {
     }
   })().finally(() => {
     syncWork = null;
+    syncWorkStartedAt = 0;
   });
 
   return syncWork;
+};
+
+const wakeSyncProcessor = () => {
+  const state = ensureState();
+  if (syncWork && syncWorkStartedAt && Date.now() - syncWorkStartedAt > 2 * 60 * 1000 && !hasRunningSyncJob(state)) {
+    syncWork = null;
+    syncWorkStartedAt = 0;
+  }
+
+  if (nextRunnableSyncJob()) {
+    processUploadJobs().catch(() => undefined);
+  }
 };
 
 const startSyncProcessor = () => {
   if (syncTimer) return;
 
   setTimeout(() => {
-    processUploadJobs().catch(() => undefined);
+    wakeSyncProcessor();
   }, 1000);
 
   syncTimer = setInterval(() => {
-    processUploadJobs().catch(() => undefined);
+    wakeSyncProcessor();
   }, 5000);
+};
+
+const recoverInterruptedSyncJobs = () => {
+  const state = ensureState();
+  let changed = false;
+  const syncJobs = state.syncJobs.map((job) => {
+    if (job.status !== 'running') return job;
+    changed = true;
+    return normalizeSyncJob({
+      ...job,
+      status: 'queued',
+      nextAttemptAt: '',
+      lastError: job.lastError || 'Interrupted; retrying',
+    });
+  });
+
+  if (!changed) {
+    return writeState(applyAllVaultSyncStatuses(state));
+  }
+
+  return writeState(applyAllVaultSyncStatuses({ ...state, syncJobs }));
 };
 
 const cloudFoldersToDefaultVault = async (folderPaths) => {
@@ -1655,7 +1773,7 @@ const cloudFoldersToDefaultVault = async (folderPaths) => {
 
   const result = enqueueUploadJobs(state, vault.id, folderPaths);
   state = result.state;
-  processUploadJobs().catch(() => undefined);
+  wakeSyncProcessor();
 
   return state;
 };
@@ -1675,7 +1793,7 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
   );
 
   if (matches.length === 0) {
-    throw new Error('Folder is not clouded');
+    throw new Error('Folder is not in Nubem');
   }
 
   const uniqueRoots = Array.from(new Map(matches.map((job) => [path.resolve(job.rootPath), job])).values());
@@ -1685,9 +1803,9 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
     buttons: ['Remove', 'Cancel'],
     defaultId: 1,
     cancelId: 1,
-    title: 'Remove from cloud',
-    message: `Remove "${label}" from the vault?`,
-    detail: 'Files stay on this computer. The cloud copy is removed from the storage PC for paired devices.',
+    title: 'Remove from Nubem',
+    message: `Remove "${label}" from Nubem?`,
+    detail: 'Files stay on this computer. The vault copy is removed from the storage PC for paired devices.',
   });
 
   if (result.response !== 0) {
@@ -1714,7 +1832,7 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
     ),
     'remove',
     label,
-    'Removed from cloud'
+    'Removed from Nubem'
   );
 
   return writeState(nextState);
@@ -2204,7 +2322,7 @@ const cloudFoldersAndNotify = async (folderPaths) => {
 
   if (state.pairing.role === 'client') {
     focusMainWindow();
-    notifyCloudError('Join a vault before clouding folders');
+    notifyCloudError('Join a vault before adding folders to Nubem');
     return;
   }
 
@@ -2228,7 +2346,7 @@ const removeCloudFoldersAndNotify = async (folderPaths) => {
     await removeCloudFoldersFromDefaultVault(folderPaths);
     notifyCloudRemoved(folders);
   } catch (error) {
-    notifyCloudError(error instanceof Error ? error.message : 'Could not remove from cloud');
+    notifyCloudError(error instanceof Error ? error.message : 'Could not remove from Nubem');
   }
 };
 
@@ -2306,7 +2424,10 @@ app.whenReady().then(async () => {
   const startupToggleCloudFolderArgs = getToggleCloudFolderArgs();
 
   ipcMain.handle('app:get-state', () => {
-    refreshPairingState().catch(() => undefined);
+    refreshPairingState()
+      .then(() => wakeSyncProcessor())
+      .catch(() => wakeSyncProcessor());
+    wakeSyncProcessor();
     return ensureState();
   });
 
@@ -2314,7 +2435,7 @@ app.whenReady().then(async () => {
     const currentState = ensureState();
     const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: clientVault || currentState.pairing.role === 'client' ? 'Add to cloud' : 'Add vault',
+      title: clientVault || currentState.pairing.role === 'client' ? 'Add to Nubem' : 'Add vault',
       properties: ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 
@@ -2327,7 +2448,7 @@ app.whenReady().then(async () => {
     }
 
     if (ensureState().pairing.role === 'client') {
-      notifyCloudError('Join a vault before clouding folders');
+      notifyCloudError('Join a vault before adding folders to Nubem');
       return ensureState();
     }
 
@@ -2336,7 +2457,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('folders:cloud', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Add to cloud',
+      title: 'Add to Nubem',
       properties: ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 
@@ -2360,8 +2481,8 @@ app.whenReady().then(async () => {
       buttons: ['Remove', 'Cancel'],
       defaultId: 1,
       cancelId: 1,
-      title: 'Remove from cloud',
-      message: `Remove "${folder.name}" from Nubem Drive?`,
+      title: 'Remove from Nubem',
+      message: `Remove "${folder.name}" from Nubem?`,
       detail: 'Files stay on this computer. Paired devices will stop seeing this folder.',
     });
 
@@ -2376,7 +2497,7 @@ app.whenReady().then(async () => {
       },
       'remove',
       folder.name,
-      'Removed from cloud'
+      'Removed from Nubem'
     );
 
     return writeState(nextState);
@@ -2422,7 +2543,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('pairing:create-code', (_event, relayUrl) => createPairCode(relayUrl));
   ipcMain.handle('pairing:join', (_event, relayUrl, code) => joinPairing(relayUrl, code));
   ipcMain.handle('vaults:share', (_event, id, relayUrl) => shareVault(id, relayUrl));
-  ipcMain.handle('pairing:refresh', () => refreshPairingState());
+  ipcMain.handle('pairing:refresh', async () => {
+    const state = await refreshPairingState();
+    wakeSyncProcessor();
+    return state;
+  });
   ipcMain.handle('pairing:reset', () => resetPairing());
   ipcMain.handle('server:set-mode', (_event, enabled) => setServerMode(Boolean(enabled)));
   ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));
@@ -2433,10 +2558,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('updates:install', () => installUpdate());
 
   heartbeatTimer = setInterval(() => {
-    refreshPairingState().catch(() => undefined);
+    refreshPairingState()
+      .then(() => wakeSyncProcessor())
+      .catch(() => wakeSyncProcessor());
   }, 5000);
 
   scheduleUpdateChecks();
+  recoverInterruptedSyncJobs();
   startSyncProcessor();
   createWindow();
 
