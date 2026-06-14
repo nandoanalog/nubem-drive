@@ -17,7 +17,8 @@ const target = args.target || process.env.HANDOFF_TARGET || inferTarget();
 const otherTarget = args.next || process.env.HANDOFF_NEXT || inferOtherTarget(target);
 const pollMs = Number(args.poll || process.env.HANDOFF_POLL_MS || DEFAULT_POLL_MS);
 const workdir = path.resolve(args.workdir || process.env.HANDOFF_WORKDIR || process.cwd());
-const codexBin = args.codex || process.env.CODEX_BIN || 'codex';
+const ghBin = resolveTool(args.gh || process.env.GH_BIN || 'gh', ghCandidates());
+const codexBin = resolveTool(args.codex || process.env.CODEX_BIN || 'codex', codexCandidates());
 const statePath = path.resolve(
   args.state ||
     process.env.HANDOFF_STATE ||
@@ -35,7 +36,7 @@ main().catch((error) => {
 });
 
 async function main() {
-  requireTool('gh');
+  requireTool(ghBin);
   requireTool(codexBin);
 
   const currentUser = runGh(['api', 'user', '-q', '.login']).trim();
@@ -48,6 +49,8 @@ async function main() {
 
   console.log(`Nubem Drive handoff loop`);
   console.log(`repo=${repo} issue=${issue} target="${target}" workdir=${workdir}`);
+  console.log(`gh=${ghBin}`);
+  console.log(`codex=${codexBin}`);
   console.log(`trusted-authors=${[...allowedAuthors].join(', ')}`);
   console.log(dryRun ? 'dry-run=true' : `poll=${pollMs}ms`);
 
@@ -310,10 +313,11 @@ function clampComment(body) {
 }
 
 function runGh(argsList) {
-  return execFileSync('gh', argsList, { cwd: workdir, encoding: 'utf8' });
+  return execFileSync(ghBin, argsList, { cwd: workdir, encoding: 'utf8' });
 }
 
 function requireTool(tool) {
+  if (path.isAbsolute(tool) && fs.existsSync(tool)) return;
   const command = process.platform === 'win32' ? 'where' : 'command';
   const argsList = process.platform === 'win32' ? [tool] : ['-v', tool];
   try {
@@ -321,6 +325,71 @@ function requireTool(tool) {
   } catch {
     throw new Error(`Missing required tool: ${tool}`);
   }
+}
+
+function resolveTool(preferred, candidates) {
+  if (preferred !== 'codex' && preferred !== 'gh') return preferred;
+  if (toolOnPath(preferred)) return preferred;
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || preferred;
+}
+
+function toolOnPath(tool) {
+  try {
+    const command = process.platform === 'win32' ? 'where' : 'command';
+    const argsList = process.platform === 'win32' ? [tool] : ['-v', tool];
+    execFileSync(command, argsList, { stdio: 'ignore', shell: process.platform !== 'win32' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ghCandidates() {
+  if (process.platform === 'win32') {
+    return [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'GitHub CLI', 'gh.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'GitHub CLI', 'gh.exe'),
+    ];
+  }
+
+  return ['/usr/bin/gh', '/usr/local/bin/gh', '/opt/homebrew/bin/gh'];
+}
+
+function codexCandidates() {
+  const extensionRoot = path.join(os.homedir(), '.vscode', 'extensions');
+  const binaryName = process.platform === 'win32' ? 'codex.exe' : 'codex';
+  const platformDir = codexPlatformDir();
+  const candidates = [];
+
+  try {
+    const extensions = fs
+      .readdirSync(extensionRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('openai.chatgpt-'))
+      .map((entry) => entry.name)
+      .sort()
+      .reverse();
+
+    for (const extension of extensions) {
+      candidates.push(path.join(extensionRoot, extension, 'bin', platformDir, binaryName));
+    }
+  } catch {
+    // VS Code is not installed or the extension path is different.
+  }
+
+  if (process.platform === 'win32') {
+    candidates.push(path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Codex', binaryName));
+  } else {
+    candidates.push('/usr/local/bin/codex', '/opt/homebrew/bin/codex');
+  }
+
+  return candidates;
+}
+
+function codexPlatformDir() {
+  const arch = process.arch === 'x64' ? 'x86_64' : process.arch;
+  if (process.platform === 'win32') return `win32-${arch}`;
+  if (process.platform === 'darwin') return `darwin-${arch}`;
+  return `linux-${arch}`;
 }
 
 function parseArgs(list) {
