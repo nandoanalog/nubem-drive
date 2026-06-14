@@ -12,6 +12,8 @@ let mainWindow;
 let heartbeatTimer;
 let updateTimer;
 let updateWork;
+let syncTimer;
+let syncWork;
 
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
 const defaultRelayUrl = 'https://drive.nubem.org';
@@ -69,6 +71,7 @@ const makeInitialState = () => {
       status: 'idle',
     },
     folders: [],
+    syncJobs: [],
     activity: [],
     updates: updateDefaults(),
     devices: [
@@ -92,6 +95,44 @@ const relayStatusFromPairing = (pairing) => {
   if (pairing?.status === 'ready') return 'ready';
   return 'offline';
 };
+
+const normalizeSyncFile = (file = {}) => ({
+  sourcePath: String(file.sourcePath || file.path || ''),
+  relativePath: String(file.relativePath || ''),
+  sizeBytes: Number.isFinite(file.sizeBytes) ? file.sizeBytes : Number(file.size || 0) || 0,
+  modifiedAt: String(file.modifiedAt || ''),
+  status: ['pending', 'done', 'error'].includes(file.status) ? file.status : 'pending',
+  attempts: Number.isFinite(file.attempts) ? file.attempts : 0,
+  error: String(file.error || ''),
+});
+
+const normalizeSyncJob = (job = {}) => {
+  const files = Array.isArray(job.files) ? job.files.map(normalizeSyncFile).filter((file) => file.sourcePath && file.relativePath) : [];
+  const completedFiles = files.filter((file) => file.status === 'done').length;
+
+  return {
+    id: String(job.id || crypto.randomUUID()),
+    type: 'upload-folder',
+    vaultFolderId: String(job.vaultFolderId || ''),
+    rootPath: String(job.rootPath || ''),
+    rootName: String(job.rootName || 'Folder'),
+    status: ['queued', 'running', 'complete', 'error'].includes(job.status) ? job.status : 'queued',
+    createdAt: String(job.createdAt || now()),
+    updatedAt: String(job.updatedAt || now()),
+    completedAt: String(job.completedAt || ''),
+    nextAttemptAt: String(job.nextAttemptAt || ''),
+    lastError: String(job.lastError || ''),
+    totalFiles: Number.isFinite(job.totalFiles) ? job.totalFiles : files.length,
+    completedFiles,
+    totalBytes: Number.isFinite(job.totalBytes) ? job.totalBytes : files.reduce((sum, file) => sum + file.sizeBytes, 0),
+    files,
+  };
+};
+
+const normalizeSyncJobs = (jobs) =>
+  Array.isArray(jobs)
+    ? jobs.map(normalizeSyncJob).filter((job) => job.vaultFolderId && job.rootPath).slice(0, 128)
+    : [];
 
 const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
   const fresh = makeInitialState();
@@ -141,6 +182,7 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
     currentDevice,
     pairing,
     folders,
+    syncJobs: normalizeSyncJobs(state.syncJobs),
     activity: Array.isArray(state.activity) ? state.activity : [],
     updates: updateDefaults(state.updates, { restoreTransient: restoreUpdates }),
     devices: [localDevice, ...devices],
@@ -580,6 +622,42 @@ const resetPairing = () => {
 
 const processingRelayRequests = new Set();
 const deleteRequestPrefix = '.nubem-command/delete/';
+const relayRequestLockTtlMs = 10 * 60 * 1000;
+
+const relayLockRoot = () => path.join(path.dirname(dataFile()), 'relay-locks');
+
+const acquireRelayRequestLock = (requestId) => {
+  if (processingRelayRequests.has(requestId)) {
+    return false;
+  }
+
+  const lockPath = path.join(relayLockRoot(), requestId);
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.mkdirSync(lockPath);
+    processingRelayRequests.add(requestId);
+    return true;
+  } catch {
+    try {
+      const stat = fs.statSync(lockPath);
+      if (Date.now() - stat.mtime.getTime() > relayRequestLockTtlMs) {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+        fs.mkdirSync(lockPath);
+        processingRelayRequests.add(requestId);
+        return true;
+      }
+    } catch {
+      return false;
+    }
+
+    return false;
+  }
+};
+
+const releaseRelayRequestLock = (requestId) => {
+  processingRelayRequests.delete(requestId);
+  fs.rmSync(path.join(relayLockRoot(), requestId), { recursive: true, force: true });
+};
 
 const encodeDeleteRequestPath = (relativePath) =>
   `${deleteRequestPrefix}${Buffer.from(relativePath, 'utf8').toString('base64url')}`;
@@ -700,6 +778,22 @@ const listCloudFolder = (state, folderId, relativePath = '') => {
     path: currentPath,
     parentPath,
     entries,
+  };
+};
+
+const statCloudPath = (state, folderId, relativePath = '') => {
+  const { root, target } = resolveCloudPath(state, folderId, relativePath);
+  const stat = fs.statSync(target);
+  const type = stat.isDirectory() ? 'directory' : 'file';
+
+  return {
+    exists: true,
+    name: path.basename(target),
+    type,
+    relativePath: relativeCloudPath(root, target),
+    sizeBytes: type === 'file' ? stat.size : 0,
+    sizeLabel: type === 'file' ? formatBytes(stat.size) : '',
+    modifiedAt: stat.mtime.toISOString(),
   };
 };
 
@@ -858,9 +952,27 @@ const sendFileToRelay = async (requestId, folderId, relativePath) => {
 const receiveFileFromRelay = async (vaultFolderId, request) => {
   const state = ensureState();
   const { target } = resolveCloudPath(state, vaultFolderId, request.relativePath);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const modifiedAt = request.modifiedAt ? new Date(request.modifiedAt) : null;
 
-  const stream = fs.createWriteStream(target);
+  if (fs.existsSync(target)) {
+    const current = fs.statSync(target);
+    const remoteTime = modifiedAt && Number.isFinite(modifiedAt.getTime()) ? modifiedAt.getTime() : 0;
+    if (current.isFile() && current.size === Number(request.totalBytes || 0) && (!remoteTime || Math.abs(current.mtime.getTime() - remoteTime) < 2000)) {
+      return {
+        fileName: path.basename(target),
+        relativePath: request.relativePath,
+        totalBytes: current.size,
+        sizeLabel: formatBytes(current.size),
+        skipped: true,
+        writtenAt: now(),
+      };
+    }
+  }
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmpTarget = `${target}.nubem-part-${request.id}`;
+
+  const stream = fs.createWriteStream(tmpTarget);
   try {
     for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
       const chunk = await downloadRelayChunk(vaultFolderId, request.id, index);
@@ -872,11 +984,17 @@ const receiveFileFromRelay = async (vaultFolderId, request) => {
     });
   }
 
+  fs.renameSync(tmpTarget, target);
+  if (modifiedAt && Number.isFinite(modifiedAt.getTime())) {
+    fs.utimesSync(target, modifiedAt, modifiedAt);
+  }
+
+  const stat = fs.statSync(target);
   return {
     fileName: path.basename(target),
     relativePath: request.relativePath,
-    totalBytes: fs.statSync(target).size,
-    sizeLabel: formatBytes(fs.statSync(target).size),
+    totalBytes: stat.size,
+    sizeLabel: formatBytes(stat.size),
     writtenAt: now(),
   };
 };
@@ -894,11 +1012,10 @@ const handlePendingRelayRequests = async (vaultFolderId) => {
   });
 
   for (const request of payload.requests || []) {
-    if (processingRelayRequests.has(request.id)) {
+    if (!acquireRelayRequestLock(request.id)) {
       continue;
     }
 
-    processingRelayRequests.add(request.id);
     try {
       const deleteRelativePath = decodeDeleteRequestPath(request);
       let result;
@@ -910,6 +1027,8 @@ const handlePendingRelayRequests = async (vaultFolderId) => {
         result = await receiveFileFromRelay(vaultFolderId, request);
       } else if (request.type === 'delete') {
         result = deleteCloudPath(ensureState(), vaultFolderId, request.relativePath);
+      } else if (request.type === 'stat') {
+        result = statCloudPath(ensureState(), vaultFolderId, request.relativePath);
       } else {
         result = listCloudFolder(ensureState(), vaultFolderId, request.relativePath);
       }
@@ -917,7 +1036,7 @@ const handlePendingRelayRequests = async (vaultFolderId) => {
     } catch (error) {
       await completeRelayRequest(vaultFolderId, request.id, null, error instanceof Error ? error.message : 'Request failed');
     } finally {
-      processingRelayRequests.delete(request.id);
+      releaseRelayRequestLock(request.id);
     }
   }
 };
@@ -1046,7 +1165,11 @@ const walkFiles = (root) => {
     }
 
     if (stat.isFile()) {
-      files.push({ path: target, size: stat.size });
+      files.push({
+        sourcePath: target,
+        sizeBytes: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+      });
     }
   };
 
@@ -1054,7 +1177,7 @@ const walkFiles = (root) => {
   return files;
 };
 
-const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount) => {
+const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount, modifiedAt = '') => {
   const { pairId, relayUrl, token } = getVaultCredentials(vaultFolderId);
   const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
     pairId,
@@ -1066,15 +1189,17 @@ const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalB
     totalBytes,
     sizeLabel: formatBytes(totalBytes),
     chunkCount,
+    modifiedAt,
   });
 
   return payload.requestId;
 };
 
-const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath) => {
+const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, metadata = {}) => {
   const stat = fs.statSync(sourceFile);
   const chunkSize = 768 * 1024;
   const chunkCount = Math.max(1, Math.ceil(stat.size / chunkSize));
+  const modifiedAt = metadata.modifiedAt || stat.mtime.toISOString();
   let requestId = '';
   let file;
   const buffer = Buffer.alloc(chunkSize);
@@ -1083,7 +1208,7 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath) 
 
   try {
     file = fs.openSync(sourceFile, 'r');
-    requestId = await createUploadRequest(vaultFolderId, targetRelativePath, path.basename(sourceFile), stat.size, chunkCount);
+    requestId = await createUploadRequest(vaultFolderId, targetRelativePath, path.basename(sourceFile), stat.size, chunkCount, modifiedAt);
 
     if (stat.size === 0) {
       await uploadRelayChunk(vaultFolderId, requestId, 0, Buffer.alloc(0).toString('base64'));
@@ -1113,20 +1238,324 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath) 
   }
 };
 
-const uploadFolderToVault = async (vaultFolderId, folderPath) => {
+const makeUploadJob = (vaultFolderId, folderPath) => {
   const root = path.resolve(folderPath);
   const rootName = path.basename(root) || 'Folder';
-  const files = walkFiles(root);
+  const files = walkFiles(root).map((file) => ({
+    ...file,
+    relativePath: [rootName, relativeCloudPath(root, file.sourcePath)].filter(Boolean).join('/'),
+    status: 'pending',
+    attempts: 0,
+    error: '',
+  }));
 
-  for (const file of files) {
-    const relativePath = [rootName, relativeCloudPath(root, file.path)].filter(Boolean).join('/');
-    await uploadFileToVault(vaultFolderId, file.path, relativePath);
-  }
+  return normalizeSyncJob({
+    id: crypto.randomUUID(),
+    type: 'upload-folder',
+    vaultFolderId,
+    rootPath: root,
+    rootName,
+    status: files.length > 0 ? 'queued' : 'complete',
+    createdAt: now(),
+    updatedAt: now(),
+    completedAt: files.length > 0 ? '' : now(),
+    totalFiles: files.length,
+    totalBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
+    files,
+  });
+};
+
+const syncJobProgress = (job) => {
+  const completedFiles = job.files.filter((file) => file.status === 'done').length;
+  const totalFiles = Math.max(job.files.length, job.totalFiles, 0);
+  return {
+    completedFiles,
+    totalFiles,
+    progress: totalFiles === 0 ? 100 : Math.round((completedFiles / totalFiles) * 100),
+  };
+};
+
+const applyVaultSyncStatus = (state, vaultFolderId) => {
+  const activeJobs = state.syncJobs.filter((job) => job.vaultFolderId === vaultFolderId && job.status !== 'complete');
+  const completedJobs = state.syncJobs.filter((job) => job.vaultFolderId === vaultFolderId && job.status === 'complete');
+  const totalFiles = activeJobs.reduce((sum, job) => sum + Math.max(job.totalFiles, job.files.length), 0);
+  const completedFiles = activeJobs.reduce((sum, job) => sum + syncJobProgress(job).completedFiles, 0);
+  const isRunning = activeJobs.some((job) => job.status === 'running');
+  const hasQueued = activeJobs.length > 0;
 
   return {
-    name: rootName,
-    fileCount: files.length,
+    ...state,
+    folders: state.folders.map((folder) => {
+      if (folder.id !== vaultFolderId || folder.vaultRole !== 'client') {
+        return folder;
+      }
+
+      if (!hasQueued) {
+        return {
+          ...folder,
+          status: folder.status === 'paused' ? 'paused' : 'synced',
+          progress: 100,
+          updatedAt: completedJobs.length > 0 ? now() : folder.updatedAt,
+        };
+      }
+
+      return {
+        ...folder,
+        status: isRunning ? 'syncing' : 'queued',
+        progress: totalFiles === 0 ? 100 : Math.round((completedFiles / totalFiles) * 100),
+        updatedAt: now(),
+      };
+    }),
   };
+};
+
+const updateSyncJob = (jobId, updater) => {
+  const state = ensureState();
+  let changedJob = null;
+  const syncJobs = state.syncJobs.map((job) => {
+    if (job.id !== jobId) return job;
+    changedJob = normalizeSyncJob({
+      ...updater(job),
+      updatedAt: now(),
+    });
+    return changedJob;
+  });
+
+  if (!changedJob) {
+    return state;
+  }
+
+  return writeState(applyVaultSyncStatus({ ...state, syncJobs }, changedJob.vaultFolderId));
+};
+
+const updateSyncFile = (jobId, relativePath, patch, jobPatch = {}) =>
+  updateSyncJob(jobId, (job) => ({
+    ...job,
+    ...jobPatch,
+    files: job.files.map((file) => (file.relativePath === relativePath ? { ...file, ...patch } : file)),
+  }));
+
+const markSyncFileDone = (jobId, file, patch = {}) =>
+  updateSyncFile(
+    jobId,
+    file.relativePath,
+    {
+      ...patch,
+      status: 'done',
+      error: '',
+    },
+    {
+      lastError: '',
+      nextAttemptAt: '',
+    }
+  );
+
+const markSyncFileRetry = (jobId, file, message) => {
+  const attempts = Number(file.attempts || 0) + 1;
+  const delayMs = Math.min(5 * 60 * 1000, 10_000 * attempts);
+  return updateSyncFile(
+    jobId,
+    file.relativePath,
+    {
+      status: 'pending',
+      attempts,
+      error: message,
+    },
+    {
+      status: 'queued',
+      lastError: message,
+      nextAttemptAt: new Date(Date.now() + delayMs).toISOString(),
+    }
+  );
+};
+
+const finishSyncJob = (jobId) => {
+  const state = updateSyncJob(jobId, (job) => ({
+    ...job,
+    status: 'complete',
+    completedAt: now(),
+    lastError: '',
+    nextAttemptAt: '',
+  }));
+  const job = state.syncJobs.find((item) => item.id === jobId);
+  if (job) {
+    writeState(addActivity(ensureState(), 'upload', job.rootName, `${syncJobProgress(job).totalFiles} files uploaded`));
+  }
+  return ensureState();
+};
+
+const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
+  const existingKeys = new Set(
+    state.syncJobs
+      .filter((job) => job.status !== 'complete')
+      .map((job) => `${job.vaultFolderId}:${path.resolve(job.rootPath)}`)
+  );
+  const jobs = [];
+
+  for (const folderPath of resolveDirectoryPaths(folderPaths)) {
+    const root = path.resolve(folderPath);
+    const key = `${vaultFolderId}:${root}`;
+    if (existingKeys.has(key)) {
+      continue;
+    }
+
+    const job = makeUploadJob(vaultFolderId, root);
+    jobs.push(job);
+    existingKeys.add(key);
+  }
+
+  if (jobs.length === 0) {
+    return { state, jobs };
+  }
+
+  const fileCount = jobs.reduce((sum, job) => sum + job.totalFiles, 0);
+  const nextState = addActivity(
+    applyVaultSyncStatus(
+      {
+        ...state,
+        syncJobs: [...state.syncJobs, ...jobs],
+      },
+      vaultFolderId
+    ),
+    'upload',
+    jobs.length === 1 ? jobs[0].rootName : `${jobs.length} folders`,
+    `${fileCount} files queued`
+  );
+
+  return { state: writeState(nextState), jobs };
+};
+
+const statRemotePath = async (vaultFolderId, relativePath) => {
+  const requestId = await createRelayRequest('stat', vaultFolderId, relativePath);
+  return waitForVaultRequest(vaultFolderId, requestId, 90_000);
+};
+
+const remoteFileMatches = async (vaultFolderId, file) => {
+  try {
+    const result = await statRemotePath(vaultFolderId, file.relativePath);
+    const remoteTime = new Date(result?.modifiedAt || 0).getTime();
+    const localTime = new Date(file.modifiedAt || 0).getTime();
+
+    return (
+      result?.exists === true &&
+      result.type === 'file' &&
+      Number(result.sizeBytes || 0) === Number(file.sizeBytes || 0) &&
+      (!Number.isFinite(localTime) || !Number.isFinite(remoteTime) || Math.abs(remoteTime - localTime) < 2000)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const nextRunnableSyncJob = () => {
+  const state = ensureState();
+  const currentTime = Date.now();
+  return state.syncJobs.find((job) => {
+    if (job.status === 'complete' || job.status === 'error') return false;
+    if (!job.nextAttemptAt) return true;
+    return new Date(job.nextAttemptAt).getTime() <= currentTime;
+  });
+};
+
+const processUploadJob = async (jobId) => {
+  let state = updateSyncJob(jobId, (job) => ({
+    ...job,
+    status: 'running',
+    lastError: '',
+    nextAttemptAt: '',
+  }));
+
+  while (true) {
+    state = ensureState();
+    const job = state.syncJobs.find((item) => item.id === jobId);
+    if (!job || job.status === 'complete') {
+      return ensureState();
+    }
+
+    const vault = state.folders.find((folder) => folder.id === job.vaultFolderId && folder.vaultRole === 'client');
+    if (!vault) {
+      return updateSyncJob(jobId, (current) => ({
+        ...current,
+        status: 'error',
+        lastError: 'Vault not linked',
+        nextAttemptAt: '',
+      }));
+    }
+
+    const file = job.files.find((item) => item.status !== 'done');
+    if (!file) {
+      return finishSyncJob(jobId);
+    }
+
+    try {
+      if (!fs.existsSync(file.sourcePath)) {
+        markSyncFileDone(jobId, file, { error: 'Source missing' });
+        continue;
+      }
+
+      const stat = fs.statSync(file.sourcePath);
+      if (!stat.isFile()) {
+        markSyncFileDone(jobId, file, { error: 'Source skipped' });
+        continue;
+      }
+
+      const currentFile = {
+        ...file,
+        sizeBytes: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+      };
+
+      updateSyncFile(jobId, file.relativePath, {
+        sizeBytes: currentFile.sizeBytes,
+        modifiedAt: currentFile.modifiedAt,
+        error: '',
+      });
+
+      if (!(await remoteFileMatches(job.vaultFolderId, currentFile))) {
+        await uploadFileToVault(job.vaultFolderId, currentFile.sourcePath, currentFile.relativePath, currentFile);
+      }
+
+      markSyncFileDone(jobId, currentFile, {
+        sizeBytes: currentFile.sizeBytes,
+        modifiedAt: currentFile.modifiedAt,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      markSyncFileRetry(jobId, file, message);
+      return ensureState();
+    }
+  }
+};
+
+const processUploadJobs = async () => {
+  if (syncWork) return syncWork;
+
+  syncWork = (async () => {
+    while (true) {
+      const job = nextRunnableSyncJob();
+      if (!job) {
+        return ensureState();
+      }
+
+      await processUploadJob(job.id);
+    }
+  })().finally(() => {
+    syncWork = null;
+  });
+
+  return syncWork;
+};
+
+const startSyncProcessor = () => {
+  if (syncTimer) return;
+
+  setTimeout(() => {
+    processUploadJobs().catch(() => undefined);
+  }, 1000);
+
+  syncTimer = setInterval(() => {
+    processUploadJobs().catch(() => undefined);
+  }, 5000);
 };
 
 const cloudFoldersToDefaultVault = async (folderPaths) => {
@@ -1138,20 +1567,9 @@ const cloudFoldersToDefaultVault = async (folderPaths) => {
     throw new Error('Join a vault first');
   }
 
-  const folders = resolveDirectoryPaths(folderPaths);
-  for (const folderPath of folders) {
-    const name = path.basename(path.resolve(folderPath)) || 'Folder';
-    state = writeState(addActivity(ensureState(), 'upload', name, `Uploading to ${vault.name}`));
-
-    try {
-      const result = await uploadFolderToVault(vault.id, folderPath);
-      state = writeState(addActivity(ensureState(), 'upload', result.name, `${result.fileCount} files to ${vault.name}`));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Upload failed';
-      state = writeState(addActivity(ensureState(), 'upload', name, message));
-      throw error;
-    }
-  }
+  const result = enqueueUploadJobs(state, vault.id, folderPaths);
+  state = result.state;
+  processUploadJobs().catch(() => undefined);
 
   return state;
 };
@@ -1532,7 +1950,7 @@ const notifyClouded = (added) => {
     return;
   }
 
-  const body = added.length === 1 ? `${added[0].name} clouded` : `${added.length} folders clouded`;
+  const body = added.length === 1 ? `${added[0].name} queued` : `${added.length} folders queued`;
   new Notification({ title: 'Nubem Drive', body }).show();
 };
 
@@ -1541,7 +1959,7 @@ const notifyCloudUploadStarted = (folders) => {
     return;
   }
 
-  const body = folders.length === 1 ? `Uploading ${folders[0].name}` : `Uploading ${folders.length} folders`;
+  const body = folders.length === 1 ? `Queuing ${folders[0].name}` : `Queuing ${folders.length} folders`;
   new Notification({ title: 'Nubem Drive', body }).show();
 };
 
@@ -1638,6 +2056,7 @@ if (!singleInstanceLock) {
     app.whenReady().then(async () => {
       if (cloudFolderArgs.length > 0) {
         await cloudFoldersAndNotify(cloudFolderArgs);
+        focusMainWindow();
         return;
       }
 
@@ -1651,12 +2070,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  const cloudFolderArgs = getCloudFolderArgs();
-  if (cloudFolderArgs.length > 0) {
-    await cloudFoldersAndNotify(cloudFolderArgs);
-    setTimeout(() => app.quit(), 600);
-    return;
-  }
+  const startupCloudFolderArgs = getCloudFolderArgs();
 
   ipcMain.handle('app:get-state', () => {
     refreshPairingState().catch(() => undefined);
@@ -1789,7 +2203,13 @@ app.whenReady().then(async () => {
   }, 5000);
 
   scheduleUpdateChecks();
+  startSyncProcessor();
   createWindow();
+
+  if (startupCloudFolderArgs.length > 0) {
+    await cloudFoldersAndNotify(startupCloudFolderArgs);
+    focusMainWindow();
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1805,6 +2225,10 @@ app.on('window-all-closed', () => {
 
   if (updateTimer) {
     clearInterval(updateTimer);
+  }
+
+  if (syncTimer) {
+    clearInterval(syncTimer);
   }
 
   if (process.platform !== 'darwin') {

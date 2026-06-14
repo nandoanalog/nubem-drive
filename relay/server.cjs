@@ -235,6 +235,7 @@ const publicRequest = (request) => ({
   totalBytes: request.totalBytes,
   sizeLabel: request.sizeLabel,
   chunkCount: request.chunkCount,
+  modifiedAt: request.modifiedAt,
   requesterId: request.requesterId,
   createdAt: request.createdAt,
 });
@@ -403,7 +404,7 @@ const handlers = {
       return { status: 401, payload: { ok: false, error: 'Not linked' } };
     }
 
-    const allowedTypes = new Set(['delete', 'download', 'list', 'upload']);
+    const allowedTypes = new Set(['delete', 'download', 'list', 'stat', 'upload']);
     const type = allowedTypes.has(body.type) ? body.type : 'list';
     const requestId = crypto.randomUUID();
     const request = {
@@ -415,6 +416,7 @@ const handlers = {
       totalBytes: Number.isFinite(body.totalBytes) ? body.totalBytes : 0,
       sizeLabel: String(body.sizeLabel || '').slice(0, 40),
       chunkCount: Number.isFinite(body.chunkCount) ? body.chunkCount : 0,
+      modifiedAt: String(body.modifiedAt || '').slice(0, 64),
       requesterId: tokenDeviceId(pair, body.token),
       status: type === 'upload' ? 'uploading' : 'pending',
       createdAt: now(),

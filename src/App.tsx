@@ -64,6 +64,7 @@ const demoState: AppState = {
   devices: [
     { id: 'demo-device', name: 'This PC', role: 'This PC', status: 'online', address: 'Local' },
   ],
+  syncJobs: [],
   activity: [],
 }
 

@@ -110,6 +110,34 @@ export type ActivityItem = {
   at: string
 }
 
+export type SyncFile = {
+  sourcePath: string
+  relativePath: string
+  sizeBytes: number
+  modifiedAt: string
+  status: 'pending' | 'done' | 'error'
+  attempts: number
+  error: string
+}
+
+export type SyncJob = {
+  id: string
+  type: 'upload-folder'
+  vaultFolderId: string
+  rootPath: string
+  rootName: string
+  status: 'queued' | 'running' | 'complete' | 'error'
+  createdAt: string
+  updatedAt: string
+  completedAt: string
+  nextAttemptAt: string
+  lastError: string
+  totalFiles: number
+  completedFiles: number
+  totalBytes: number
+  files: SyncFile[]
+}
+
 export type AppState = {
   storageNode: StorageNode
   currentDevice: {
@@ -122,6 +150,7 @@ export type AppState = {
   updates: UpdateState
   folders: CloudFolder[]
   devices: Device[]
+  syncJobs: SyncJob[]
   activity: ActivityItem[]
 }
 

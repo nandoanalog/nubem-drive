@@ -12,6 +12,8 @@ Nubem Drive is an Electron + React app for marking local folders as cloud folder
 - Device pairing through `drive.nubem.org`
 - Remote folder browsing from paired devices
 - Relay-backed file downloads
+- Headless storage server for the HDD machine
+- Persistent client upload queue with file-level resume
 - Strong one-time pairing codes with relay rate limiting
 - Platform update manifest with background update checks
 - Lightweight Node relay service
@@ -22,7 +24,10 @@ Nubem Drive is an Electron + React app for marking local folders as cloud folder
 ```bash
 npm install
 npm run dev
+npm run storage
 ```
+
+On Linux installs, the storage server is also installed as `nubem-drive-storage` and a user service named `nubem-drive-storage.service`.
 
 ## Checks
 
