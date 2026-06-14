@@ -480,14 +480,16 @@ function App() {
                 )}
               </button>
             ) : null}
-            <button
-              className="primary-button icon-only"
-              onClick={chooseFolders}
-              title={selectedIsClientVault ? 'Cloud folder' : 'Add vault'}
-              aria-label={selectedIsClientVault ? 'Cloud folder' : 'Add vault'}
-            >
-              {selectedIsClientVault ? <UploadCloud size={18} /> : <Plus size={18} />}
-            </button>
+            {!selectedIsClientVault ? (
+              <button
+                className="primary-button icon-only"
+                onClick={chooseFolders}
+                title="Add vault"
+                aria-label="Add vault"
+              >
+                <Plus size={18} />
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -608,19 +610,14 @@ function App() {
 
                 {selectedFolder.code && !selectedIsClientVault ? <button className="vault-code" onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}>{selectedFolder.code}</button> : null}
 
-                {selectedIsClientVault ? (
-                  <button className="primary-button full-width" onClick={chooseFolders}>
-                    <UploadCloud size={17} />
-                    Cloud folder
-                  </button>
-                ) : (
+                {!selectedIsClientVault ? (
                   <section className="control-section" aria-label="Vault">
                     <button className="primary-button full-width" onClick={createPairCode}>
                       <KeyRound size={17} />
                       {selectedFolder.code ? 'Copy code' : 'Create code'}
                     </button>
                   </section>
-                )}
+                ) : null}
 
               </>
             ) : (

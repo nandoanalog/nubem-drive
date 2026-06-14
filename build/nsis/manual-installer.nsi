@@ -17,7 +17,7 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\Nubem Drive\Nubem Drive.lnk" "$INSTDIR\Nubem Drive.exe"
   CreateShortcut "$DESKTOP\Nubem Drive.lnk" "$INSTDIR\Nubem Drive.exe"
 
-  WriteRegStr HKCU "Software\Classes\Directory\shell\NubemDriveCloud" "" "Cloud"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\NubemDriveCloud" "" "Add to cloud"
   WriteRegStr HKCU "Software\Classes\Directory\shell\NubemDriveCloud" "Icon" "$INSTDIR\Nubem Drive.exe"
   WriteRegStr HKCU "Software\Classes\Directory\shell\NubemDriveCloud\command" "" "$\"$INSTDIR\Nubem Drive.exe$\" $\"nubem-cloud-folder:%1$\""
 

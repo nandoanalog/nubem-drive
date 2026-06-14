@@ -1667,7 +1667,7 @@ app.whenReady().then(async () => {
     const currentState = ensureState();
     const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: clientVault || currentState.pairing.role === 'client' ? 'Cloud folder' : 'Add vault',
+      title: clientVault || currentState.pairing.role === 'client' ? 'Add to cloud' : 'Add vault',
       properties: ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 
@@ -1689,7 +1689,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('folders:cloud', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Cloud folder',
+      title: 'Add to cloud',
       properties: ['openDirectory', 'multiSelections', 'createDirectory'],
     });
 

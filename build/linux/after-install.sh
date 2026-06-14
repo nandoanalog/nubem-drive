@@ -19,7 +19,7 @@ chmod 755 /usr/bin/nubem-drive-cloud-folder
 cat > /usr/share/nemo/actions/nubem-cloud-folder.nemo_action <<'EOF'
 [Nemo Action]
 Active=true
-Name=Cloud
+Name=Add to cloud
 Comment=Add folder to Nubem Drive
 Exec=nubem-drive-cloud-folder %F
 Icon-Name=folder-remote-symbolic
