@@ -25,10 +25,16 @@ const updatePlatformKey = () => {
   return `${process.platform}-${process.arch}`;
 };
 
-const updateDefaults = (updates = {}) => ({
+const normalizeUpdateStatus = (updates = {}) => {
+  if (updates.status === 'checking' || updates.status === 'downloading') return 'idle';
+  if (updates.status === 'installing') return updates.downloadedPath ? 'ready' : 'idle';
+  return updates.status || 'idle';
+};
+
+const updateDefaults = (updates = {}, { restoreTransient = false } = {}) => ({
   currentVersion: app.getVersion(),
   platform: updatePlatformKey(),
-  status: updates.status || 'idle',
+  status: restoreTransient ? normalizeUpdateStatus(updates) : updates.status || 'idle',
   latestVersion: updates.latestVersion || '',
   checkedAt: updates.checkedAt || '',
   message: updates.message || '',
@@ -87,7 +93,7 @@ const relayStatusFromPairing = (pairing) => {
   return 'offline';
 };
 
-const normalizeState = (rawState) => {
+const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
   const fresh = makeInitialState();
   const state = rawState && typeof rawState === 'object' ? rawState : {};
   const currentDevice = {
@@ -136,7 +142,7 @@ const normalizeState = (rawState) => {
     pairing,
     folders,
     activity: Array.isArray(state.activity) ? state.activity : [],
-    updates: updateDefaults(state.updates),
+    updates: updateDefaults(state.updates, { restoreTransient: restoreUpdates }),
     devices: [localDevice, ...devices],
   };
 };
@@ -149,7 +155,7 @@ const ensureState = () => {
   }
 
   try {
-    const state = normalizeState(JSON.parse(fs.readFileSync(file, 'utf8')));
+    const state = normalizeState(JSON.parse(fs.readFileSync(file, 'utf8')), { restoreUpdates: true });
     writeState(state);
     return state;
   } catch {
@@ -1275,6 +1281,19 @@ const downloadUpdate = async ({ autoInstall = false } = {}) => {
 
 const shellEscape = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
 
+const waitForChild = (child) =>
+  new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`Installer exited ${code ?? 'unknown'}`));
+    });
+  });
+
 const installUpdate = async () => {
   const state = ensureState();
   const updatePath = state.updates.downloadedPath;
@@ -1298,12 +1317,28 @@ const installUpdate = async () => {
   if (process.platform === 'linux' && updatePath.endsWith('.deb')) {
     if (fs.existsSync('/usr/bin/pkexec')) {
       const child = spawn('/usr/bin/pkexec', ['/bin/sh', '-c', `/usr/bin/apt install -y ${shellEscape(updatePath)}`], {
-        detached: true,
         stdio: 'ignore',
       });
-      child.unref();
+
+      try {
+        await waitForChild(child);
+      } catch (error) {
+        return writeUpdateState({
+          status: 'error',
+          message: error instanceof Error ? error.message : updateMessage('error'),
+        });
+      }
+
+      const nextState = writeUpdateState({
+        status: 'current',
+        latestVersion: state.updates.latestVersion || app.getVersion(),
+        message: updateMessage('current'),
+        progress: 100,
+      });
+
+      app.relaunch();
       app.quit();
-      return ensureState();
+      return nextState;
     }
 
     await shell.openPath(updatePath);
