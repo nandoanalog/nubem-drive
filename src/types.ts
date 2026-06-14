@@ -24,8 +24,6 @@ export type CloudFolder = {
 export type StorageNode = {
   name: string
   path: string
-  capacityBytes: number
-  usedBytes: number
   status: 'online' | 'offline'
   relayStatus: 'ready' | 'offline' | 'limited' | 'waiting' | 'linked'
 }

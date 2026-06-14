@@ -55,8 +55,6 @@ const makeInitialState = () => {
     storageNode: {
       name: `${os.hostname()} storage`,
       path: path.join(os.homedir(), 'Nubem Storage'),
-      capacityBytes: 2_000_000_000_000,
-      usedBytes: 612_000_000_000,
       status: 'online',
       relayStatus: 'offline',
     },

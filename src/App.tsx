@@ -19,7 +19,6 @@ import {
   Plus,
   RefreshCcw,
   Search,
-  Server,
   Trash2,
   UploadCloud,
   Wifi,
@@ -39,8 +38,6 @@ const demoState: AppState = {
   storageNode: {
     name: 'Main storage',
     path: '/mnt/nubem-storage',
-    capacityBytes: 2_000_000_000_000,
-    usedBytes: 612_000_000_000,
     status: 'online',
     relayStatus: 'ready',
   },
@@ -221,8 +218,6 @@ function App() {
       window.clearInterval(interval)
     }
   }, [api])
-
-  const storagePercent = Math.round((state.storageNode.usedBytes / state.storageNode.capacityBytes) * 100)
 
   const folders = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -447,18 +442,9 @@ function App() {
           {currentRole.label}
         </div>
 
-        <section className="storage-panel" aria-label="Storage">
-          <div className="storage-heading" title={state.storageNode.name}>
-            <Server size={18} />
-            <strong>{storagePercent}%</strong>
-          </div>
-          <div className="meter">
-            <span style={{ width: `${storagePercent}%` }} />
-          </div>
-          <div className="relay-pill" title="Relay ready" aria-label="Relay ready">
-            <Wifi size={15} />
-          </div>
-        </section>
+        <div className="relay-pill" title="Relay ready" aria-label="Relay ready">
+          <Wifi size={15} />
+        </div>
 
         <section className="device-summary" aria-label="Devices">
           {state.devices.map((device) => (
