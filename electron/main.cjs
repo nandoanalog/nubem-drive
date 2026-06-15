@@ -538,6 +538,16 @@ const formatBytes = (bytes) => {
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 };
 
+const onlineClientNamesFromPayload = (payload, currentDeviceId) => {
+  if (!Array.isArray(payload?.devices)) return null;
+
+  return payload.devices
+    .filter((device) => device.id !== currentDeviceId && device.role === 'client' && device.status === 'online')
+    .map((device) => String(device.name || 'Client').trim())
+    .filter(Boolean)
+    .slice(0, 32);
+};
+
 const summarizeLocalFolder = (folder) => {
   let itemCount = 0;
   let totalBytes = 0;
@@ -578,6 +588,7 @@ const summarizeLocalFolder = (folder) => {
 
   return {
     itemCount,
+    sizeBytes: totalBytes,
     sizeLabel: formatBytes(totalBytes),
     updatedAt: latestModifiedAt,
   };
@@ -592,6 +603,7 @@ const publicVaultFolder = (state, folder) => {
     id: folder.id,
     name: folder.name,
     path: folder.name,
+    sizeBytes: summary.sizeBytes,
     sizeLabel: summary.sizeLabel,
     itemCount: summary.itemCount,
     updatedAt: summary.updatedAt,
@@ -607,6 +619,7 @@ const remoteFoldersFromPayload = (payload) =>
     ? payload.folders.map((folder) => ({
         ...folder,
         path: folder.path || folder.name,
+        sizeBytes: Number.isFinite(folder.sizeBytes) ? folder.sizeBytes : 0,
         sizeLabel: folder.sizeLabel || 'Cloud',
         itemCount: Number.isFinite(folder.itemCount) ? folder.itemCount : 0,
         updatedAt: folder.updatedAt || now(),
@@ -698,12 +711,14 @@ const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
     folders: state.folders.map((folder) => {
       if (folder.id !== folderId) return folder;
       const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
+      const connectedClients = onlineClientNamesFromPayload(payload, state.currentDevice.id);
       return {
         ...folder,
         ...(remoteFolder && vaultRole === 'client'
           ? {
               name: remoteFolder.name || folder.name,
               path: remoteFolder.path || remoteFolder.name || folder.path,
+              sizeBytes: Number.isFinite(remoteFolder.sizeBytes) ? remoteFolder.sizeBytes : folder.sizeBytes,
               sizeLabel: remoteFolder.sizeLabel || folder.sizeLabel,
               itemCount: Number.isFinite(remoteFolder.itemCount) ? remoteFolder.itemCount : folder.itemCount,
               updatedAt: remoteFolder.updatedAt || folder.updatedAt,
@@ -712,6 +727,17 @@ const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
               devices: remoteFolder.devices?.length ? remoteFolder.devices : [payload.storageName || 'Storage PC'],
               progress: Number.isFinite(remoteFolder.progress) ? remoteFolder.progress : folder.progress,
             }
+          : remoteFolder && vaultRole === 'storage'
+            ? {
+                sizeBytes: Number.isFinite(remoteFolder.sizeBytes) ? remoteFolder.sizeBytes : folder.sizeBytes,
+                sizeLabel: remoteFolder.sizeLabel || folder.sizeLabel,
+                itemCount: Number.isFinite(remoteFolder.itemCount) ? remoteFolder.itemCount : folder.itemCount,
+                updatedAt: remoteFolder.updatedAt || folder.updatedAt,
+                status: folder.status === 'paused' ? 'paused' : remoteFolder.status || 'synced',
+                localMode: folder.localMode || 'mirror',
+                devices: connectedClients || folder.devices || [],
+                progress: Number.isFinite(remoteFolder.progress) ? remoteFolder.progress : 100,
+              }
           : {}),
         vaultRole,
         relayUrl: normalizeRelayUrl(folder.relayUrl || state.pairing.relayUrl || defaultRelayUrl),

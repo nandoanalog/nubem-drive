@@ -38,6 +38,24 @@ const formatBytes = (bytes) => {
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 };
 
+const mapRelayDevice = (device, currentDeviceId) => ({
+  id: device.id,
+  name: device.name || 'Device',
+  role: device.role === 'storage' ? 'Server' : 'Client',
+  status: device.status || 'offline',
+  address: device.id === currentDeviceId ? 'This PC' : 'Relay',
+});
+
+const onlineClientNamesFromPayload = (payload, currentDeviceId) => {
+  if (!Array.isArray(payload?.devices)) return null;
+
+  return payload.devices
+    .filter((device) => device.id !== currentDeviceId && device.role === 'client' && device.status === 'online')
+    .map((device) => String(device.name || 'Client').trim())
+    .filter(Boolean)
+    .slice(0, 32);
+};
+
 const makeInitialState = () => {
   const deviceId = crypto.randomUUID();
   return {
@@ -205,6 +223,7 @@ const summarizeLocalFolder = (folder) => {
 
   return {
     itemCount,
+    sizeBytes: totalBytes,
     sizeLabel: formatBytes(totalBytes),
     updatedAt: latestModifiedAt,
   };
@@ -216,6 +235,7 @@ const publicVaultFolder = (state, folder) => {
     id: folder.id,
     name: folder.name,
     path: folder.name,
+    sizeBytes: summary.sizeBytes,
     sizeLabel: summary.sizeLabel,
     itemCount: summary.itemCount,
     updatedAt: summary.updatedAt,
@@ -238,23 +258,33 @@ const applyVaultPayloadToFolder = (state, folderId, payload) =>
       message: '',
       lastSeenAt: now(),
     },
-    folders: state.folders.map((folder) =>
-      folder.id === folderId
-        ? {
-            ...folder,
-            vaultRole: 'storage',
-            relayUrl: normalizeRelayUrl(folder.relayUrl || state.pairing.relayUrl || defaultRelayUrl),
-            pairId: payload.pairId || folder.pairId,
-            token: payload.token || folder.token,
-            code: payload.code || folder.code,
-            codeExpiresAt: payload.expiresAt || folder.codeExpiresAt,
-            storageName: payload.storageName || folder.storageName,
-            status: folder.status === 'paused' ? 'paused' : 'synced',
-            progress: 100,
-            updatedAt: now(),
-          }
-        : folder
-    ),
+    devices: Array.isArray(payload.devices)
+      ? payload.devices.map((device) => mapRelayDevice(device, state.currentDevice.id))
+      : state.devices,
+    folders: state.folders.map((folder) => {
+      if (folder.id !== folderId) return folder;
+      const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
+      const connectedClients = onlineClientNamesFromPayload(payload, state.currentDevice.id);
+
+      return {
+        ...folder,
+        vaultRole: 'storage',
+        relayUrl: normalizeRelayUrl(folder.relayUrl || state.pairing.relayUrl || defaultRelayUrl),
+        pairId: payload.pairId || folder.pairId,
+        token: payload.token || folder.token,
+        code: payload.code || folder.code,
+        codeExpiresAt: payload.expiresAt || folder.codeExpiresAt,
+        storageName: payload.storageName || folder.storageName,
+        sizeBytes: Number.isFinite(remoteFolder?.sizeBytes) ? remoteFolder.sizeBytes : folder.sizeBytes,
+        sizeLabel: remoteFolder?.sizeLabel || folder.sizeLabel,
+        itemCount: Number.isFinite(remoteFolder?.itemCount) ? remoteFolder.itemCount : folder.itemCount,
+        status: folder.status === 'paused' ? 'paused' : remoteFolder?.status || 'synced',
+        localMode: folder.localMode || 'mirror',
+        devices: connectedClients || folder.devices || [],
+        progress: Number.isFinite(remoteFolder?.progress) ? remoteFolder.progress : 100,
+        updatedAt: remoteFolder?.updatedAt || now(),
+      };
+    }),
   });
 
 const shareVault = async (state, folder) => {

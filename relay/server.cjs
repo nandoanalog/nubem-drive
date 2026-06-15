@@ -79,6 +79,7 @@ const cleanFolders = (folders) =>
         id: String(folder.id || '').slice(0, 80),
         name: String(folder.name || 'Folder').slice(0, 160),
         path: String(folder.path || folder.name || 'Folder').slice(0, 260),
+        sizeBytes: Number.isFinite(folder.sizeBytes) ? folder.sizeBytes : 0,
         sizeLabel: String(folder.sizeLabel || '').slice(0, 40),
         itemCount: Number.isFinite(folder.itemCount) ? folder.itemCount : 0,
         updatedAt: String(folder.updatedAt || now()),

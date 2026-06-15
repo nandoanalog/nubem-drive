@@ -12,6 +12,7 @@ export type CloudFolder = {
   code?: string
   codeExpiresAt?: string
   storageName?: string
+  sizeBytes?: number
   sizeLabel: string
   itemCount: number
   updatedAt: string

@@ -253,6 +253,25 @@ function formatTime(value: string) {
   }).format(new Date(value))
 }
 
+function formatVaultGb(folder: CloudFolder) {
+  if (!Number.isFinite(folder.sizeBytes)) {
+    return folder.sizeLabel || '0 GB'
+  }
+
+  const bytes = Math.max(0, folder.sizeBytes || 0)
+  if (bytes === 0) return '0 GB'
+
+  const gb = bytes / 1024 ** 3
+  if (gb < 0.01) return '<0.01 GB'
+  if (gb >= 100) return `${Math.round(gb).toLocaleString()} GB`
+  return `${gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)} GB`
+}
+
+function clientCountLabel(folder: CloudFolder) {
+  const count = folder.devices.length
+  return count === 1 ? '1 client' : `${count} clients`
+}
+
 function matchesFilter(folder: CloudFolder, filter: FilterKey) {
   if (filter === 'local') return folder.localMode === 'local' || folder.localMode === 'mirror'
   if (filter === 'online') return folder.localMode === 'online'
@@ -672,7 +691,7 @@ function App() {
         ) : null}
 
         <div className="content-grid">
-          <section className={`folder-browser ${selectedIsClientVault ? 'remote-panel' : ''}`} aria-label={selectedIsClientVault ? 'Vault files' : 'Cloud folders'}>
+          <section className={`folder-browser ${selectedIsClientVault ? 'remote-panel' : ''}`} aria-label={selectedIsClientVault ? 'Vault files' : isServerApp ? 'Vaults' : 'Cloud folders'}>
             {selectedIsClientVault && !selectedIsLinkedClientVault ? (
               <div className="empty-state action-state">
                 <button className="primary-button" onClick={() => setIsPairPanelOpen(true)}>
@@ -693,22 +712,31 @@ function App() {
             ) : (
               <>
                 <div className="browser-toolbar">
-                  <div className="segmented-control">
-                    {filters.map((item) => {
-                      const Icon = filterIcons[item.key]
-                      return (
-                        <button
-                          aria-label={item.label}
-                          className={filter === item.key ? 'selected' : ''}
-                          key={item.key}
-                          onClick={() => setFilter(item.key)}
-                          title={item.label}
-                        >
-                          <Icon size={16} />
-                        </button>
-                      )
-                    })}
-                  </div>
+                  {isServerApp ? (
+                    <div className="server-vault-head" aria-hidden="true">
+                      <span>Vault</span>
+                      <span>Clients</span>
+                      <span>Used</span>
+                      <span>Status</span>
+                    </div>
+                  ) : (
+                    <div className="segmented-control">
+                      {filters.map((item) => {
+                        const Icon = filterIcons[item.key]
+                        return (
+                          <button
+                            aria-label={item.label}
+                            className={filter === item.key ? 'selected' : ''}
+                            key={item.key}
+                            onClick={() => setFilter(item.key)}
+                            title={item.label}
+                          >
+                            <Icon size={16} />
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="folder-list">
@@ -717,14 +745,23 @@ function App() {
                   ) : folders.length === 0 ? (
                     <div className="empty-state">No folders</div>
                   ) : (
-                    folders.map((folder) => (
-                      <FolderRow
-                        folder={folder}
-                        isSelected={selectedFolder?.id === folder.id}
-                        key={folder.id}
-                        onSelect={() => setSelectedId(folder.id)}
-                      />
-                    ))
+                    folders.map((folder) =>
+                      isServerApp ? (
+                        <ServerVaultRow
+                          folder={folder}
+                          isSelected={selectedFolder?.id === folder.id}
+                          key={folder.id}
+                          onSelect={() => setSelectedId(folder.id)}
+                        />
+                      ) : (
+                        <FolderRow
+                          folder={folder}
+                          isSelected={selectedFolder?.id === folder.id}
+                          key={folder.id}
+                          onSelect={() => setSelectedId(folder.id)}
+                        />
+                      )
+                    )
                   )}
                 </div>
               </>
@@ -793,10 +830,12 @@ function App() {
                 ) : null}
 
                 <div className="meta-strip">
-                  <span title="Size">{selectedFolder.sizeLabel}</span>
+                  <span title="Used">{isServerApp && !selectedIsClientVault ? formatVaultGb(selectedFolder) : selectedFolder.sizeLabel}</span>
                   <span title="Items">{selectedFolder.itemCount.toLocaleString()}</span>
                   <span title="Updated">{formatTime(selectedFolder.updatedAt)}</span>
-                  <span title="Devices">{selectedFolder.devices.length}</span>
+                  <span title={isServerApp && !selectedIsClientVault ? 'Connected clients' : 'Devices'}>
+                    {isServerApp && !selectedIsClientVault ? clientCountLabel(selectedFolder) : selectedFolder.devices.length}
+                  </span>
                 </div>
 
                 {selectedIsClientVault ? <SyncProgressPanel jobs={selectedSyncJobs} /> : null}
@@ -1248,6 +1287,38 @@ function FolderRow({
       </span>
       <span className="size-cell">
         <span>{folder.sizeLabel}</span>
+      </span>
+    </button>
+  )
+}
+
+function ServerVaultRow({
+  folder,
+  isSelected,
+  onSelect,
+}: {
+  folder: CloudFolder
+  isSelected: boolean
+  onSelect: () => void
+}) {
+  const StatusIcon = statusIcons[folder.status]
+  const clientTitle = folder.devices.length > 0 ? folder.devices.join(', ') : 'No clients connected'
+
+  return (
+    <button className={isSelected ? 'server-vault-row selected' : 'server-vault-row'} onClick={onSelect}>
+      <span className="server-vault-name">
+        <span className="small-folder-icon">
+          <HardDrive size={18} />
+        </span>
+        <strong>{folder.name}</strong>
+      </span>
+      <span className="server-vault-clients" title={clientTitle}>
+        <Laptop size={15} />
+        <span>{folder.devices.length}</span>
+      </span>
+      <span className="server-vault-used">{formatVaultGb(folder)}</span>
+      <span className={`status-pill ${folder.status}`} title={statusCopy[folder.status]} aria-label={statusCopy[folder.status]}>
+        <StatusIcon size={15} />
       </span>
     </button>
   )
