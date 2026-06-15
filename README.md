@@ -7,6 +7,32 @@ Private folder cloud with two desktop apps:
 
 Clients link to a server vault with a code. After that, `Add to Nubem` copies selected folders into that vault and resumes missing files if the connection drops.
 
+## Use
+
+### Storage PC
+
+1. Install `Nubem Server`.
+2. Open `Nubem Server`.
+3. Add the HDD/storage folder as a vault.
+4. Give the vault code to a client PC.
+
+The server screen shows the vaults, connected clients, GB used, and status.
+
+### Client PC
+
+1. Install `Nubem Drive`.
+2. Open `Nubem Drive`.
+3. Enter the vault code from the server.
+4. Right-click any local folder and choose `Add to Nubem`.
+
+The folder is copied into the linked server vault. If the connection drops, the client resumes the missing files later.
+
+### Expected Roles
+
+- `Nubem Server` should show `Server`.
+- `Nubem Drive` should show `Client`.
+- The storage PC should not need the client app installed.
+
 ## Apps
 
 ### Nubem Server
