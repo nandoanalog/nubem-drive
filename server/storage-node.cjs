@@ -305,7 +305,7 @@ const shareVault = async (state, folder) => {
     payload
   );
 
-  return writeState(addActivity(nextState, 'vault', folder.name, payload.code || 'Shared'));
+  return writeState(addActivity(nextState, 'vault', folder.name, payload.code || 'Code ready'));
 };
 
 const validateRelativePath = (relativePath = '') => {

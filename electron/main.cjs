@@ -782,7 +782,7 @@ const shareVault = async (folderId, relayUrl = defaultRelayUrl) => {
     'storage'
   );
 
-  return writeState(addActivity(nextState, 'vault', folder.name, payload.code || 'Shared'));
+  return writeState(addActivity(nextState, 'vault', folder.name, payload.code || 'Code ready'));
 };
 
 const ensureStorageVaultsShared = async () => {
@@ -2512,7 +2512,7 @@ const addFoldersFromPaths = (folderPaths, detail = 'Queued for storage') => {
   return { state: writeState(nextState), added: nextFolders };
 };
 
-const addVaultsFromPaths = async (folderPaths, detail = 'Vault added') => {
+const addVaultsFromPaths = async (folderPaths, detail = 'Storage added') => {
   let result = addFoldersFromPaths(folderPaths, detail);
   let state = result.state;
 
@@ -2663,7 +2663,7 @@ const cloudFoldersAndNotify = async (folderPaths) => {
     return;
   }
 
-  const { added } = await addVaultsFromPaths(folderPaths, 'Vault added from context menu');
+  const { added } = await addVaultsFromPaths(folderPaths, 'Storage added from context menu');
   if (added.length > 0) {
     notifyClouded(added);
   }
@@ -2772,7 +2772,7 @@ app.whenReady().then(async () => {
     const currentState = ensureState();
     const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: clientVault || currentState.appMode === 'client' ? 'Add to Nubem' : 'Add storage folder',
+      title: clientVault || currentState.appMode === 'client' ? 'Add to Nubem' : 'Choose cloud storage',
       properties: clientVault
         ? ['openFile', 'openDirectory', 'multiSelections']
         : ['openDirectory', 'multiSelections', 'createDirectory'],
@@ -2791,7 +2791,7 @@ app.whenReady().then(async () => {
       return ensureState();
     }
 
-    return (await addVaultsFromPaths(result.filePaths, 'Vault added')).state;
+    return (await addVaultsFromPaths(result.filePaths, 'Storage added')).state;
   });
 
   ipcMain.handle('folders:cloud', async () => {

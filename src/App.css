@@ -248,6 +248,14 @@ button:disabled {
   transform: translateY(-1px);
 }
 
+.storage-button {
+  min-width: 134px;
+}
+
+.storage-button svg {
+  flex: 0 0 auto;
+}
+
 .link-button.connected,
 .link-button.linked,
 .link-button.waiting {
@@ -445,8 +453,7 @@ button:disabled {
   gap: 12px;
 }
 
-.pair-panel-actions,
-.server-toggle {
+.pair-panel-actions {
   display: flex;
   align-items: center;
 }
@@ -454,41 +461,6 @@ button:disabled {
 .pair-panel-actions {
   gap: 8px;
   min-width: 0;
-}
-
-.server-toggle {
-  gap: 8px;
-  min-height: 38px;
-  max-width: 240px;
-  padding: 0 12px;
-  border: 1px solid #d5cbc0;
-  border-radius: 8px;
-  color: #25231f;
-  background: #fffdf8;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.server-toggle span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.server-toggle svg {
-  flex: 0 0 auto;
-  color: #0f766e;
-}
-
-.server-toggle.is-server {
-  border-color: #b9ded4;
-  color: #0f5e57;
-  background: #e5f5ef;
-}
-
-.server-toggle:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
 }
 
 .pair-panel-head strong,
@@ -973,12 +945,6 @@ button:disabled {
 
 .quick-actions button.danger-action:hover {
   background: #ffe5de;
-}
-
-.quick-actions button.code-action {
-  border-color: #b9ded4;
-  color: #0f5e57;
-  background: #e5f5ef;
 }
 
 .vault-code {

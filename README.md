@@ -13,8 +13,9 @@ Clients link to a server vault with a code. After that, `Add to Nubem` copies se
 
 1. Install `Nubem Server`.
 2. Open `Nubem Server`.
-3. Add the HDD/storage folder as a vault.
-4. Give the vault code to a client PC.
+3. Click `Add storage`.
+4. Choose the HDD, drive mount, or folder to allocate to Nubem.
+5. Click the vault code to copy it, then enter it on a client PC.
 
 The server screen shows the vaults, connected clients, GB used, and status.
 
@@ -38,7 +39,7 @@ The folder is copied into the linked server vault. If the connection drops, the 
 ### Nubem Server
 
 - Linux app for the HDD/storage machine.
-- Adds storage folders that can be shared by code.
+- Adds storage folders that clients can join by code.
 - Installs the user service `nubem-server-storage.service`.
 - Keeps server state in `~/.config/nubem-server/state.json`.
 
