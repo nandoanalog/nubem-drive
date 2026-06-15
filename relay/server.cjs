@@ -219,6 +219,7 @@ const pairPayload = (pair, extra = {}) => ({
   storageName: pair.storage?.name,
   devices: publicDevices(pair),
   folders: pairFoldersForToken(pair, extra.token),
+  clientVaults: pairClientVaultsForToken(pair, extra.token),
   ...extra,
 });
 
@@ -237,6 +238,23 @@ const pairFoldersForToken = (pair, token) => {
     remotePathPrefix,
     devices: [pair.storage?.name || 'Storage PC'],
   }];
+};
+
+const pairClientVaultsForToken = (pair, token) => {
+  if (tokenRole(pair, token) !== 'storage') return [];
+
+  return Object.values(pair.clients || {}).map((client) => {
+    const age = Date.now() - new Date(client.lastSeenAt || 0).getTime();
+    const remotePathPrefix = safePathName(client.remotePathPrefix || client.name || 'Client', 'Client');
+
+    return {
+      name: safePathName(client.vaultName || 'My Vault', 'My Vault'),
+      clientName: client.name || 'Client',
+      remotePathPrefix,
+      status: age < onlineWindowMs ? 'online' : 'sleeping',
+      lastSeenAt: client.lastSeenAt || '',
+    };
+  });
 };
 
 const findPairByCode = (state, code) =>
@@ -471,7 +489,7 @@ const handlers = {
 
     prunePairs(state);
     writeState(state);
-    return pairPayload(pair);
+    return pairPayload(pair, { token: body.token });
   },
 
   'POST /api/drive/requests/create': async (body) => {

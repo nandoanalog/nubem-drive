@@ -1,6 +1,14 @@
 export type FolderStatus = 'synced' | 'syncing' | 'queued' | 'paused' | 'conflict' | 'offline'
 export type LocalMode = 'online' | 'local' | 'mirror'
 
+export type ClientVault = {
+  name: string
+  clientName: string
+  remotePathPrefix: string
+  status: 'online' | 'sleeping' | 'offline'
+  lastSeenAt?: string
+}
+
 export type CloudFolder = {
   id: string
   name: string
@@ -20,6 +28,7 @@ export type CloudFolder = {
   status: FolderStatus
   localMode: LocalMode
   devices: string[]
+  clientVaults?: ClientVault[]
   progress: number
 }
 

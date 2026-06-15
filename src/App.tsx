@@ -89,7 +89,7 @@ const statusCopy: Record<FolderStatus, string> = {
 
 type ConnectionTone = 'connected' | 'connecting' | 'waiting' | 'error' | 'offline' | 'idle'
 type ConnectionSummary = {
-  actionLabel: string
+  actionLabel?: string
   detail: string
   icon: typeof Cloud
   title: string
@@ -103,17 +103,17 @@ function clientVaults(state: AppState) {
 function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): ConnectionSummary {
   if (busy === 'retry') {
     return {
-      actionLabel: 'Retry',
+      actionLabel: 'Retry now',
       detail: 'Looking for your Nubem Server',
       icon: RefreshCcw,
-      title: 'Setting up your vault',
+      title: 'Connecting to Nubem',
       tone: 'connecting',
     }
   }
 
   if (error) {
     return {
-      actionLabel: 'Fix',
+      actionLabel: 'Retry now',
       detail: error,
       icon: AlertTriangle,
       title: 'Connection failed',
@@ -126,7 +126,7 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
     const vaultLabel = joinedVaults[0].name
     if (state.pairing.status === 'error' || state.pairing.status === 'offline') {
       return {
-        actionLabel: 'Details',
+        actionLabel: 'Retry now',
         detail: 'Retrying automatically',
         icon: RefreshCcw,
         title: 'Reconnecting to Nubem',
@@ -135,7 +135,6 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
     }
 
     return {
-      actionLabel: 'Details',
       detail: `Vault: ${vaultLabel}`,
       icon: CheckCircle2,
       title: 'Connected to Nubem',
@@ -145,11 +144,11 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
 
   if (state.pairing.status === 'error') {
     return {
-      actionLabel: 'Retry',
-      detail: state.pairing.message || 'No storage is available yet',
+      actionLabel: 'Retry now',
+      detail: state.pairing.message || 'Retrying automatically',
       icon: RefreshCcw,
-      title: 'Storage unavailable',
-      tone: 'error',
+      title: 'Waiting for Nubem Server',
+      tone: 'waiting',
     }
   }
 
@@ -165,11 +164,11 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
   }
 
   return {
-    actionLabel: 'Retry',
-    detail: 'Your vault is created automatically',
+    actionLabel: 'Retry now',
+    detail: 'Waiting for Nubem Server',
     icon: RefreshCcw,
-    title: 'Setting up your vault',
-    tone: 'idle',
+    title: 'Connecting to Nubem',
+    tone: 'connecting',
   }
 }
 
@@ -233,8 +232,26 @@ function formatVaultGb(folder: CloudFolder) {
   return `${gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)} GB`
 }
 
+function serverClientVaults(folder: CloudFolder) {
+  return Array.isArray(folder.clientVaults) ? folder.clientVaults : []
+}
+
+function vaultCountLabel(folder: CloudFolder) {
+  const count = serverClientVaults(folder).length || folder.devices.length
+  return count === 1 ? '1 vault' : `${count} vaults`
+}
+
+function onlineClientCount(folder: CloudFolder) {
+  const vaults = serverClientVaults(folder)
+  if (vaults.length > 0) {
+    return vaults.filter((vault) => vault.status === 'online').length
+  }
+
+  return folder.devices.length
+}
+
 function clientCountLabel(folder: CloudFolder) {
-  const count = folder.devices.length
+  const count = onlineClientCount(folder)
   return count === 1 ? '1 client' : `${count} clients`
 }
 
@@ -313,6 +330,12 @@ function App() {
   const selectedIsLinkedClientVault = selectedIsClientVault && Boolean(selectedFolder?.pairId && selectedFolder.token)
   const isServerApp = state.appMode === 'server'
   const connection = connectionSummary(state, pairBusy, pairError)
+  const canChooseFolders = isServerApp || Boolean(selectedIsLinkedClientVault)
+  const chooseFoldersTitle = isServerApp
+    ? 'Add storage'
+    : selectedIsLinkedClientVault
+      ? 'Add to Nubem'
+      : 'Waiting for Nubem Server'
   const selectedSyncJobs = useMemo(() => {
     if (!selectedFolderId) return []
     return state.syncJobs
@@ -561,9 +584,10 @@ function App() {
             ) : null}
             <button
               className={isServerApp ? 'primary-button storage-button' : 'primary-button icon-only'}
+              disabled={!canChooseFolders}
               onClick={chooseFolders}
-              title={isServerApp ? 'Add storage' : 'Add to Nubem'}
-              aria-label={isServerApp ? 'Add storage' : 'Add to Nubem'}
+              title={chooseFoldersTitle}
+              aria-label={chooseFoldersTitle}
             >
               <Plus size={18} />
               {isServerApp ? <span>Add storage</span> : null}
@@ -583,11 +607,10 @@ function App() {
         <div className="content-grid">
           <section className={`folder-browser ${selectedIsClientVault ? 'remote-panel' : ''}`} aria-label={selectedIsClientVault ? 'Vault files' : isServerApp ? 'Vaults' : 'Cloud folders'}>
             {selectedIsClientVault && !selectedIsLinkedClientVault ? (
-              <div className="empty-state action-state">
-                <button className="primary-button" onClick={refreshConnection}>
-                  <RefreshCcw size={17} />
-                  Set up vault
-                </button>
+              <div className={`empty-state vault-waiting-state ${connection.tone}`}>
+                <RefreshCcw size={22} />
+                <strong>{connection.title}</strong>
+                <span>{connection.detail}</span>
               </div>
             ) : selectedIsClientVault ? (
               <RemoteBrowser
@@ -605,7 +628,7 @@ function App() {
                   {isServerApp ? (
                     <div className="server-vault-head" aria-hidden="true">
                       <span>Vault</span>
-                      <span>Clients</span>
+                      <span>Online</span>
                       <span>Used</span>
                       <span>Status</span>
                     </div>
@@ -731,7 +754,13 @@ function App() {
 
                 {selectedIsClientVault ? (
                   <section className="control-section" aria-label="Nubem upload">
-                    <button className="primary-button full-width" onClick={chooseFolders}>
+                    <button
+                      className="primary-button full-width"
+                      disabled={!selectedIsLinkedClientVault}
+                      onClick={chooseFolders}
+                      title={selectedIsLinkedClientVault ? 'Add to Nubem' : 'Waiting for Nubem Server'}
+                      aria-label={selectedIsLinkedClientVault ? 'Add to Nubem' : 'Waiting for Nubem Server'}
+                    >
                       <Plus size={17} />
                       Add to Nubem
                     </button>
@@ -973,10 +1002,11 @@ function ConnectionStrip({
         <strong>{connection.title}</strong>
         <span>{connection.detail}</span>
       </span>
-      <button className="connection-action" onClick={onOpen} type="button">
-        <RefreshCcw size={16} />
-        <span>{connection.actionLabel}</span>
-      </button>
+      {connection.actionLabel ? (
+        <button className="connection-action icon-only" onClick={onOpen} title={connection.actionLabel} aria-label={connection.actionLabel} type="button">
+          <RefreshCcw size={16} />
+        </button>
+      ) : null}
     </section>
   )
 }
@@ -1046,7 +1076,13 @@ function ServerVaultRow({
   onSelect: () => void
 }) {
   const StatusIcon = statusIcons[folder.status]
-  const clientTitle = folder.devices.length > 0 ? folder.devices.join(', ') : 'No clients connected'
+  const vaults = serverClientVaults(folder)
+  const onlineCount = onlineClientCount(folder)
+  const clientTitle = vaults.length > 0
+    ? vaults.map((vault) => `${vault.clientName}: ${vault.name} (${vault.status})`).join(', ')
+    : folder.devices.length > 0
+      ? folder.devices.join(', ')
+      : 'No clients connected'
 
   return (
     <button className={isSelected ? 'server-vault-row selected' : 'server-vault-row'} onClick={onSelect}>
@@ -1054,11 +1090,14 @@ function ServerVaultRow({
         <span className="small-folder-icon">
           <HardDrive size={18} />
         </span>
-        <strong>{folder.name}</strong>
+        <span className="server-vault-name-copy">
+          <strong>{folder.name}</strong>
+          <small>{vaultCountLabel(folder)}</small>
+        </span>
       </span>
       <span className="server-vault-clients" title={clientTitle}>
         <Laptop size={15} />
-        <span>{folder.devices.length}</span>
+        <span>{onlineCount}</span>
       </span>
       <span className="server-vault-used">{formatVaultGb(folder)}</span>
       <span className={`status-pill ${folder.status}`} title={statusCopy[folder.status]} aria-label={statusCopy[folder.status]}>

@@ -554,6 +554,20 @@ const onlineClientNamesFromPayload = (payload, currentDeviceId) => {
     .slice(0, 32);
 };
 
+const clientVaultsFromPayload = (payload) => {
+  if (!Array.isArray(payload?.clientVaults)) return null;
+
+  return payload.clientVaults
+    .map((vault) => ({
+      name: String(vault?.name || 'My Vault').trim() || 'My Vault',
+      clientName: String(vault?.clientName || 'Client').trim() || 'Client',
+      remotePathPrefix: String(vault?.remotePathPrefix || '').trim(),
+      status: ['online', 'sleeping', 'offline'].includes(vault?.status) ? vault.status : 'offline',
+      lastSeenAt: String(vault?.lastSeenAt || ''),
+    }))
+    .slice(0, 128);
+};
+
 const summarizeLocalFolder = (folder) => {
   let itemCount = 0;
   let totalBytes = 0;
@@ -720,6 +734,7 @@ const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
       if (folder.id !== folderId) return folder;
       const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
       const connectedClients = onlineClientNamesFromPayload(payload, state.currentDevice.id);
+      const clientVaults = clientVaultsFromPayload(payload);
       return {
         ...folder,
         ...(remoteFolder && vaultRole === 'client'
@@ -745,6 +760,7 @@ const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
                 status: folder.status === 'paused' ? 'paused' : remoteFolder.status || 'synced',
                 localMode: folder.localMode || 'mirror',
                 devices: connectedClients || folder.devices || [],
+                clientVaults: clientVaults || folder.clientVaults || [],
                 progress: Number.isFinite(remoteFolder.progress) ? remoteFolder.progress : 100,
               }
           : {}),

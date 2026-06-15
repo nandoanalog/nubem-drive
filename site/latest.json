@@ -1,18 +1,18 @@
 {
-  "latest": "0.0.44",
+  "latest": "0.0.46",
   "platforms": {
     "linux-x64": {
-      "version": "0.0.44",
-      "url": "https://drive.nubem.org/downloads/Nubem-Drive-0.0.44-amd64.deb",
-      "fileName": "Nubem-Drive-0.0.44-amd64.deb",
-      "sha256": "900c4af67f4862aef7d45d8b05ec6c27cca991150049556f93768d2a5485f5dd",
+      "version": "0.0.46",
+      "url": "https://drive.nubem.org/downloads/Nubem-Drive-0.0.46-amd64.deb",
+      "fileName": "Nubem-Drive-0.0.46-amd64.deb",
+      "sha256": "b3faf44aa403082cf2ab85cf34be5d7417d571dbedce08f29e9c96d50f2ad9e8",
       "type": "deb"
     },
     "linux-x64-server": {
-      "version": "0.0.44",
-      "url": "https://drive.nubem.org/downloads/Nubem-Server-0.0.44-amd64.deb",
-      "fileName": "Nubem-Server-0.0.44-amd64.deb",
-      "sha256": "b613d7e7271f92a06dd4706ac7bb05efe56a13fdff9ad7b27e428346ee7275c0",
+      "version": "0.0.46",
+      "url": "https://drive.nubem.org/downloads/Nubem-Server-0.0.46-amd64.deb",
+      "fileName": "Nubem-Server-0.0.46-amd64.deb",
+      "sha256": "469652fecb3444bfe3ed4dc97bbcd47fea0eff03befe29dd3d85cb90f1f3333d",
       "type": "deb"
     },
     "win32-x64": {
