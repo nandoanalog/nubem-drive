@@ -90,6 +90,7 @@ const makeClientVault = (patch = {}) => ({
   token: patch.token || '',
   code: patch.code || '',
   codeExpiresAt: patch.codeExpiresAt || '',
+  remotePathPrefix: patch.remotePathPrefix || '',
   storageName: patch.storageName || '',
   sizeLabel: patch.sizeLabel || 'Cloud',
   itemCount: Number.isFinite(patch.itemCount) ? patch.itemCount : 0,
@@ -238,7 +239,12 @@ const folderTimestamp = (folder) => {
 const folderDedupeKey = (folder) => {
   if (folder?.vaultRole === 'client') {
     const vaultPath = String(folder.path || folder.name || '').trim().toLowerCase();
+    const remotePathPrefix = String(folder.remotePathPrefix || '').trim().toLowerCase();
     const storageName = String(folder.storageName || '').trim().toLowerCase();
+    if (remotePathPrefix && storageName) {
+      return `client-prefix:${storageName}:${remotePathPrefix}`;
+    }
+
     if (vaultPath && storageName) {
       return `client:${storageName}:${vaultPath}`;
     }
@@ -619,6 +625,7 @@ const remoteFoldersFromPayload = (payload) =>
     ? payload.folders.map((folder) => ({
         ...folder,
         path: folder.path || folder.name,
+        remotePathPrefix: folder.remotePathPrefix || '',
         sizeBytes: Number.isFinite(folder.sizeBytes) ? folder.sizeBytes : 0,
         sizeLabel: folder.sizeLabel || 'Cloud',
         itemCount: Number.isFinite(folder.itemCount) ? folder.itemCount : 0,
@@ -652,6 +659,7 @@ const mergeClientRemoteFolders = (state, payload) => {
       pairId: existing?.pairId || state.pairing.pairId,
       token: existing?.token || state.pairing.token,
       storageName: remoteFolder.storageName || payload.storageName || existing?.storageName,
+      remotePathPrefix: remoteFolder.remotePathPrefix || existing?.remotePathPrefix || '',
     };
   })), state.pairing);
 };
@@ -718,6 +726,7 @@ const applyVaultPayloadToFolder = (state, folderId, payload, vaultRole) =>
           ? {
               name: remoteFolder.name || folder.name,
               path: remoteFolder.path || remoteFolder.name || folder.path,
+              remotePathPrefix: remoteFolder.remotePathPrefix || folder.remotePathPrefix || '',
               sizeBytes: Number.isFinite(remoteFolder.sizeBytes) ? remoteFolder.sizeBytes : folder.sizeBytes,
               sizeLabel: remoteFolder.sizeLabel || folder.sizeLabel,
               itemCount: Number.isFinite(remoteFolder.itemCount) ? remoteFolder.itemCount : folder.itemCount,
@@ -760,7 +769,7 @@ const shareVault = async (folderId, relayUrl = defaultRelayUrl) => {
     throw new Error('Vault not found');
   }
 
-  if (folder.pairId && folder.token && folder.code) {
+  if (folder.pairId && folder.token) {
     return state;
   }
 
@@ -782,7 +791,7 @@ const shareVault = async (folderId, relayUrl = defaultRelayUrl) => {
     'storage'
   );
 
-  return writeState(addActivity(nextState, 'vault', folder.name, payload.code || 'Code ready'));
+  return writeState(addActivity(nextState, 'vault', folder.name, 'Storage ready'));
 };
 
 const ensureStorageVaultsShared = async () => {
@@ -807,6 +816,15 @@ const refreshPairingState = async () => {
 
   pairingRefreshWork = (async () => {
     let state = await ensureStorageVaultsShared();
+
+    if (!isServerApp && !findDefaultClientVault(state)) {
+      try {
+        state = await assignClientVault(state);
+      } catch (error) {
+        state = markRelayError(state, error instanceof Error ? error.message : 'Storage server unavailable');
+      }
+    }
+
     const vaults = state.folders.filter((folder) => folder.pairId && folder.token);
 
     if (vaults.length === 0 && (!state.pairing.pairId || !state.pairing.token)) {
@@ -885,25 +903,14 @@ const createPairCode = async (relayUrl) => {
       },
     },
     'link',
-    'Pair code',
-    payload.code
+    'Storage link',
+    'Ready'
   );
 
   return applyRelaySnapshot(writeState(nextState), payload, 'waiting');
 };
 
-const joinPairing = async (relayUrl, code) => {
-  const state = ensureState();
-  const cleanCode = normalizePairCode(code);
-  if (cleanCode.length !== 12 && !/^\d{6}$/.test(cleanCode)) {
-    throw new Error('Use the code shown');
-  }
-
-  const nextRelayUrl = normalizeRelayUrl(relayUrl);
-  const payload = await relayRequest(nextRelayUrl, '/api/drive/vaults/join', {
-    code: cleanCode,
-    device: localRelayDevice(state, 'client'),
-  });
+const applyClientVaultAssignment = (state, payload, relayUrl, detail = 'Vault ready') => {
   const remoteFolder = Array.isArray(payload.folders) ? payload.folders[0] : null;
   const existingClientVault = state.folders.find((folder) => folder.vaultRole === 'client');
   const folderId = remoteFolder?.id || payload.vault?.id || crypto.randomUUID();
@@ -912,7 +919,8 @@ const joinPairing = async (relayUrl, code) => {
     id: folderId,
     name: existingClientVault?.name || remoteFolder?.name || payload.vault?.name || payload.storageName || defaultClientVaultName,
     path: remoteFolder?.path || remoteFolder?.name || 'Vault',
-    relayUrl: nextRelayUrl,
+    remotePathPrefix: remoteFolder?.remotePathPrefix || existingClientVault?.remotePathPrefix || '',
+    relayUrl,
     pairId: payload.pairId,
     token: payload.token,
     storageName: payload.storageName,
@@ -939,7 +947,7 @@ const joinPairing = async (relayUrl, code) => {
       ]), { pairId: payload.pairId }),
       syncJobs,
       pairing: {
-        relayUrl: nextRelayUrl,
+        relayUrl,
         role: 'client',
         status: 'linked',
         pairId: payload.pairId,
@@ -949,11 +957,43 @@ const joinPairing = async (relayUrl, code) => {
       },
     },
     'link',
-    'Linked',
-    payload.storageName || 'Storage PC'
+    joinedVault.name,
+    detail
   );
 
-  return writeState(nextState);
+  return applyRelaySnapshot(writeState(nextState), payload, 'linked');
+};
+
+const assignClientVault = async (state = ensureState()) => {
+  const existingClientVault = findDefaultClientVault(state);
+  if (isServerApp || existingClientVault) {
+    return state;
+  }
+
+  const relayUrl = normalizeRelayUrl(state.pairing.relayUrl || defaultRelayUrl);
+  const preferredVault = state.folders.find((folder) => folder.vaultRole === 'client') || makeClientVault();
+  const payload = await relayRequest(relayUrl, '/api/drive/vaults/assign', {
+    device: localRelayDevice(state, 'client'),
+    vaultName: preferredVault.name || defaultClientVaultName,
+  });
+
+  return applyClientVaultAssignment(state, payload, relayUrl, 'Assigned');
+};
+
+const joinPairing = async (relayUrl, code) => {
+  const state = ensureState();
+  const cleanCode = normalizePairCode(code);
+  if (cleanCode.length !== 12 && !/^\d{6}$/.test(cleanCode)) {
+    throw new Error('Use the code shown');
+  }
+
+  const nextRelayUrl = normalizeRelayUrl(relayUrl);
+  const payload = await relayRequest(nextRelayUrl, '/api/drive/vaults/join', {
+    code: cleanCode,
+    device: localRelayDevice(state, 'client'),
+  });
+
+  return applyClientVaultAssignment(state, payload, nextRelayUrl, 'Connected');
 };
 
 const resetPairing = () => {
@@ -1147,6 +1187,45 @@ const validateRelativePath = (relativePath = '') => {
   return parts.join(path.sep);
 };
 
+const normalizeRemoteRelativePath = (relativePath = '') =>
+  validateRelativePath(relativePath).split(path.sep).filter(Boolean).join('/');
+
+const joinRemoteRelativePath = (...parts) =>
+  parts
+    .map((part) => normalizeRemoteRelativePath(part))
+    .filter(Boolean)
+    .join('/');
+
+const toRemoteRequestPath = (folder, relativePath = '') =>
+  folder?.vaultRole === 'client'
+    ? joinRemoteRelativePath(folder.remotePathPrefix || '', relativePath)
+    : normalizeRemoteRelativePath(relativePath);
+
+const stripRemotePathPrefix = (folder, relativePath = '') => {
+  const prefix = normalizeRemoteRelativePath(folder?.remotePathPrefix || '');
+  const remotePath = normalizeRemoteRelativePath(relativePath);
+  if (!prefix) return remotePath;
+  if (remotePath === prefix) return '';
+  return remotePath.startsWith(`${prefix}/`) ? remotePath.slice(prefix.length + 1) : remotePath;
+};
+
+const stripRemoteListingPrefix = (folder, listing) => {
+  if (!listing || folder?.vaultRole !== 'client') return listing;
+  const entries = Array.isArray(listing.entries)
+    ? listing.entries.map((entry) => ({
+        ...entry,
+        relativePath: stripRemotePathPrefix(folder, entry.relativePath),
+      }))
+    : [];
+
+  return {
+    ...listing,
+    path: stripRemotePathPrefix(folder, listing.path),
+    parentPath: stripRemotePathPrefix(folder, listing.parentPath),
+    entries,
+  };
+};
+
 const resolveCloudPath = (state, folderId, relativePath = '') => {
   const folder = state.folders.find((item) => item.id === folderId);
   if (!folder) {
@@ -1224,13 +1303,13 @@ const statCloudPath = (state, folderId, relativePath = '') => {
 };
 
 const createRelayRequest = async (type, folderId, relativePath) => {
-  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  const { folder, pairId, relayUrl, token } = getVaultCredentials(folderId);
   const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
     pairId,
     token,
     type,
     folderId,
-    relativePath,
+    relativePath: toRemoteRequestPath(folder, relativePath),
   });
 
   return payload.requestId;
@@ -1474,7 +1553,9 @@ const browseRemoteFolder = async (folderId, relativePath = '') => {
   }
 
   const requestId = await createRelayRequest('list', folderId, relativePath);
-  return waitForVaultRequest(folderId, requestId);
+  const listing = await waitForVaultRequest(folderId, requestId);
+  const folder = ensureState().folders.find((item) => item.id === folderId);
+  return stripRemoteListingPrefix(folder, listing);
 };
 
 const downloadRemoteFile = async (folderId, relativePath = '') => {
@@ -1635,13 +1716,13 @@ const walkFiles = (root) => {
 };
 
 const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount, modifiedAt = '') => {
-  const { pairId, relayUrl, token } = getVaultCredentials(vaultFolderId);
+  const { folder, pairId, relayUrl, token } = getVaultCredentials(vaultFolderId);
   const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
     pairId,
     token,
     type: 'upload',
     folderId: vaultFolderId,
-    relativePath,
+    relativePath: toRemoteRequestPath(folder, relativePath),
     fileName,
     totalBytes,
     sizeLabel: formatBytes(totalBytes),
@@ -2089,11 +2170,16 @@ const recoverInterruptedSyncJobs = () => {
 
 const cloudFoldersToDefaultVault = async (folderPaths) => {
   let state = ensureState();
-  const vault = findDefaultClientVault(state);
+  let vault = findDefaultClientVault(state);
+
+  if (!vault && state.pairing.role === 'client') {
+    state = await assignClientVault(state);
+    vault = findDefaultClientVault(state);
+  }
 
   if (!vault) {
     focusMainWindow();
-    throw new Error('Link your vault first');
+    throw new Error('Nubem storage unavailable');
   }
 
   const result = enqueueUploadJobs(state, vault.id, folderPaths);
@@ -2109,7 +2195,7 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
 
   if (!vault) {
     focusMainWindow();
-    throw new Error('Link your vault first');
+    throw new Error('Nubem storage unavailable');
   }
 
   const roots = resolveDirectoryPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
@@ -2642,8 +2728,19 @@ const focusMainWindow = () => {
 };
 
 const cloudFoldersAndNotify = async (folderPaths) => {
-  const state = ensureState();
-  const clientVault = findDefaultClientVault(state);
+  let state = ensureState();
+  let clientVault = findDefaultClientVault(state);
+  if (!clientVault && state.pairing.role === 'client') {
+    try {
+      state = await assignClientVault(state);
+      clientVault = findDefaultClientVault(state);
+    } catch (error) {
+      focusMainWindow();
+      notifyCloudError(error instanceof Error ? error.message : 'Nubem storage unavailable');
+      return;
+    }
+  }
+
   if (clientVault) {
     const folders = resolveUploadPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
     notifyCloudUploadStarted(folders);
@@ -2659,7 +2756,7 @@ const cloudFoldersAndNotify = async (folderPaths) => {
 
   if (state.pairing.role === 'client') {
     focusMainWindow();
-    notifyCloudError('Link your vault before adding folders to Nubem');
+    notifyCloudError('Nubem storage unavailable');
     return;
   }
 
@@ -2769,7 +2866,16 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('folders:choose', async () => {
-    const currentState = ensureState();
+    let currentState = ensureState();
+    if (currentState.appMode === 'client' && !findDefaultClientVault(currentState)) {
+      try {
+        currentState = await assignClientVault(currentState);
+      } catch (error) {
+        notifyCloudError(error instanceof Error ? error.message : 'Nubem storage unavailable');
+        return ensureState();
+      }
+    }
+
     const clientVault = findDefaultClientVault(currentState);
     const result = await dialog.showOpenDialog(mainWindow, {
       title: clientVault || currentState.appMode === 'client' ? 'Add to Nubem' : 'Choose cloud storage',
@@ -2787,7 +2893,7 @@ app.whenReady().then(async () => {
     }
 
     if (ensureState().pairing.role === 'client') {
-      notifyCloudError('Link your vault before adding folders to Nubem');
+      notifyCloudError('Nubem storage unavailable');
       return ensureState();
     }
 

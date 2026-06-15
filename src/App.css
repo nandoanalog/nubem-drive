@@ -256,27 +256,6 @@ button:disabled {
   flex: 0 0 auto;
 }
 
-.link-button.connected,
-.link-button.linked,
-.link-button.waiting {
-  border-color: #a8d6c9;
-  color: #0f5e57;
-  background: #eaf7f2;
-}
-
-.link-button.connecting {
-  border-color: #b9cdf0;
-  color: #275ea7;
-  background: #e7f0ff;
-}
-
-.link-button.error,
-.link-button.offline {
-  border-color: #efb0a3;
-  color: #a43b2d;
-  background: #ffebe6;
-}
-
 .update-button.available,
 .update-button.ready {
   border-color: #b9cdf0;
@@ -301,8 +280,7 @@ button:disabled {
   }
 }
 
-.connection-strip,
-.pair-status {
+.connection-strip {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -336,23 +314,19 @@ button:disabled {
 }
 
 .connection-copy strong,
-.connection-copy span,
-.pair-status strong,
-.pair-status span span {
+.connection-copy span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.connection-copy strong,
-.pair-status strong {
+.connection-copy strong {
   color: #171a1d;
   font-size: 14px;
 }
 
-.connection-copy span,
-.pair-status span span {
+.connection-copy span {
   color: #59615e;
   font-size: 12px;
   font-weight: 750;
@@ -384,215 +358,39 @@ button:disabled {
   background: #ece7db;
 }
 
-.connection-strip.connected,
-.pair-status.connected {
+.connection-strip.connected {
   border-color: #b9ded4;
   background: #f1faf6;
 }
 
-.connection-strip.connected .connection-icon,
-.pair-status.connected > svg {
+.connection-strip.connected .connection-icon {
   color: #0f6f64;
 }
 
 .connection-strip.connecting,
-.connection-strip.waiting,
-.pair-status.connecting,
-.pair-status.waiting {
+.connection-strip.waiting {
   border-color: #b9cdf0;
   background: #f2f7ff;
 }
 
 .connection-strip.connecting .connection-icon,
-.connection-strip.waiting .connection-icon,
-.pair-status.connecting > svg,
-.pair-status.waiting > svg {
+.connection-strip.waiting .connection-icon {
   color: #275ea7;
 }
 
 .connection-strip.error,
-.connection-strip.offline,
-.pair-status.error,
-.pair-status.offline {
+.connection-strip.offline {
   border-color: #efb0a3;
   background: #fff1ed;
 }
 
 .connection-strip.error .connection-icon,
-.connection-strip.offline .connection-icon,
-.pair-status.error > svg,
-.pair-status.offline > svg {
+.connection-strip.offline .connection-icon {
   color: #a43b2d;
 }
 
-.connection-strip.connecting .connection-icon svg,
-.pair-status.connecting > svg {
+.connection-strip.connecting .connection-icon svg {
   animation: soft-spin 1s linear infinite;
-}
-
-.pair-panel {
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid #ddd6ca;
-  border-radius: 8px;
-  background: #fffdf8;
-}
-
-.pair-panel-head,
-.pair-footer,
-.linked-devices,
-.pair-card {
-  display: flex;
-  align-items: center;
-}
-
-.pair-panel-head,
-.pair-footer {
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.pair-panel-actions {
-  display: flex;
-  align-items: center;
-}
-
-.pair-panel-actions {
-  gap: 8px;
-  min-width: 0;
-}
-
-.pair-panel-head strong,
-.pair-panel-head span {
-  display: block;
-}
-
-.pair-panel-head strong {
-  font-size: 16px;
-}
-
-.pair-panel-head span {
-  margin-top: 2px;
-  color: #68716d;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.pair-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 10px;
-}
-
-.pair-grid.single {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.pair-card {
-  gap: 10px;
-  min-width: 0;
-  min-height: 58px;
-  padding: 10px;
-  border: 1px solid #e2dcd0;
-  border-radius: 8px;
-  background: #faf7ef;
-}
-
-.pair-card > svg {
-  flex: 0 0 auto;
-  color: #0f766e;
-}
-
-.pair-card > strong {
-  min-width: 68px;
-  font-size: 14px;
-}
-
-.pair-status {
-  gap: 10px;
-  min-height: 48px;
-  padding: 8px 10px;
-}
-
-.pair-status > svg {
-  flex: 0 0 auto;
-}
-
-.pair-status > span {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.pair-code {
-  min-height: 38px;
-  max-width: 194px;
-  min-width: 0;
-  padding: 0 10px;
-  border: 1px solid #b9ded4;
-  border-radius: 8px;
-  color: #0f5e57;
-  background: #e5f5ef;
-  font-size: 16px;
-  font-weight: 850;
-  letter-spacing: 0;
-  cursor: pointer;
-}
-
-.pair-form {
-  display: grid;
-  grid-template-columns: auto minmax(58px, auto) minmax(180px, 1fr) 94px;
-  align-items: end;
-}
-
-.pair-form label {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.pair-form label span {
-  color: #68716d;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.pair-form input {
-  width: 100%;
-  min-height: 38px;
-  min-width: 0;
-  padding: 0 10px;
-  border: 1px solid #d9d3c8;
-  border-radius: 8px;
-  outline: 0;
-  color: #171a1d;
-  background: #fffdf8;
-}
-
-.linked-devices {
-  flex-wrap: wrap;
-  gap: 7px;
-  min-width: 0;
-}
-
-.quiet-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  max-width: 180px;
-  padding: 0 9px;
-  border: 1px solid #e0d9cf;
-  border-radius: 999px;
-  color: #4b5550;
-  background: #faf7ef;
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.quiet-chip svg {
-  flex: 0 0 auto;
 }
 
 .text-button {
@@ -606,17 +404,6 @@ button:disabled {
 
 .text-button:hover {
   background: #ece7db;
-}
-
-.pair-message {
-  min-height: 34px;
-  padding: 9px 10px;
-  border: 1px solid #ead39b;
-  border-radius: 8px;
-  color: #7a4a0c;
-  background: #fff8de;
-  font-size: 13px;
-  font-weight: 750;
 }
 
 .content-grid {
@@ -945,20 +732,6 @@ button:disabled {
 
 .quick-actions button.danger-action:hover {
   background: #ffe5de;
-}
-
-.vault-code {
-  min-height: 40px;
-  width: 100%;
-  padding: 0 10px;
-  border: 1px solid #b9ded4;
-  border-radius: 8px;
-  color: #0f5e57;
-  background: #e5f5ef;
-  font-size: 16px;
-  font-weight: 850;
-  letter-spacing: 0;
-  cursor: pointer;
 }
 
 .full-width {
@@ -1498,16 +1271,6 @@ input:focus-visible {
   .connection-action {
     width: 100%;
     max-width: none;
-  }
-
-  .pair-grid,
-  .pair-form {
-    grid-template-columns: 1fr;
-  }
-
-  .pair-card {
-    align-items: stretch;
-    flex-direction: column;
   }
 
   .folder-row {

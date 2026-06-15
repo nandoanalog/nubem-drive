@@ -79,6 +79,7 @@ const cleanFolders = (folders) =>
         id: String(folder.id || '').slice(0, 80),
         name: String(folder.name || 'Folder').slice(0, 160),
         path: String(folder.path || folder.name || 'Folder').slice(0, 260),
+        remotePathPrefix: String(folder.remotePathPrefix || '').slice(0, 260),
         sizeBytes: Number.isFinite(folder.sizeBytes) ? folder.sizeBytes : 0,
         sizeLabel: String(folder.sizeLabel || '').slice(0, 40),
         itemCount: Number.isFinite(folder.itemCount) ? folder.itemCount : 0,
@@ -90,12 +91,23 @@ const cleanFolders = (folders) =>
       }))
     : [];
 
+const ensurePairShape = (pair) => {
+  if (!pair || typeof pair !== 'object') return pair;
+  pair.clients = pair.clients && typeof pair.clients === 'object' ? pair.clients : {};
+  pair.tokens = pair.tokens && typeof pair.tokens === 'object' ? pair.tokens : {};
+  pair.requests = pair.requests && typeof pair.requests === 'object' ? pair.requests : {};
+  pair.folders = cleanFolders(pair.folders);
+  return pair;
+};
+
 const prunePairs = (state) => {
   const cutoff = Date.now() - requestTtlMs;
   const uploadCutoff = Date.now() - uploadStallMs;
   const attemptCutoff = Date.now() - joinRateWindowMs;
 
   for (const pair of Object.values(state.pairs || {})) {
+    ensurePairShape(pair);
+
     for (const [requestId, request] of Object.entries(pair.requests || {})) {
       if (new Date(request.createdAt || 0).getTime() < cutoff) {
         delete pair.requests[requestId];
@@ -130,6 +142,15 @@ const formatPairCode = (value) => {
 };
 
 const isCodeActive = (pair) => !pair.codeExpiresAt || new Date(pair.codeExpiresAt).getTime() > Date.now();
+
+const safePathName = (value, fallback = 'Vault') => {
+  const clean = String(value || fallback)
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  return clean || fallback;
+};
 
 const makeCode = (state) => {
   for (let index = 0; index < 20; index += 1) {
@@ -197,15 +218,32 @@ const pairPayload = (pair, extra = {}) => ({
   vault: pair.vault || null,
   storageName: pair.storage?.name,
   devices: publicDevices(pair),
-  folders: cleanFolders(pair.folders),
+  folders: pairFoldersForToken(pair, extra.token),
   ...extra,
 });
 
+const pairFoldersForToken = (pair, token) => {
+  const folders = cleanFolders(pair.folders);
+  const deviceId = token ? tokenDeviceId(pair, token) : '';
+  const client = deviceId ? pair.clients?.[deviceId] : null;
+  if (!client || folders.length === 0) return folders;
+
+  const rootFolder = folders[0];
+  const remotePathPrefix = safePathName(client.remotePathPrefix || client.name || 'Client');
+  return [{
+    ...rootFolder,
+    name: client.vaultName || 'My Vault',
+    path: remotePathPrefix,
+    remotePathPrefix,
+    devices: [pair.storage?.name || 'Storage PC'],
+  }];
+};
+
 const findPairByCode = (state, code) =>
-  Object.values(state.pairs).find((pair) => pair.code === code && isCodeActive(pair));
+  Object.values(state.pairs).map(ensurePairShape).find((pair) => pair.code === code && isCodeActive(pair));
 
 const verifyPair = (state, pairId, token) => {
-  const pair = state.pairs[pairId];
+  const pair = ensurePairShape(state.pairs[pairId]);
   if (!pair || !token || !pair.tokens?.[token]) {
     return null;
   }
@@ -220,6 +258,14 @@ const tokenRole = (pair, token) => {
   if (!deviceId) return null;
   return deviceId === pair.storage?.id ? 'storage' : 'client';
 };
+
+const availableStoragePairs = (state) =>
+  Object.values(state.pairs || {})
+    .filter((pair) => {
+      if (!pair.storage || cleanFolders(pair.folders).length === 0) return false;
+      return Date.now() - new Date(pair.storage.lastSeenAt || 0).getTime() < onlineWindowMs;
+    })
+    .sort((left, right) => new Date(right.storage?.lastSeenAt || right.createdAt || 0).getTime() - new Date(left.storage?.lastSeenAt || left.createdAt || 0).getTime());
 
 const verifyStorage = (state, pairId, token) => {
   const pair = verifyPair(state, pairId, token);
@@ -318,6 +364,37 @@ const handlers = {
     pair.tokens[token] = client.id;
     writeState(state);
 
+    return pairPayload(pair, { token });
+  },
+
+  'POST /api/drive/vaults/assign': async (body) => {
+    const state = prunePairs(readState());
+    const pair = availableStoragePairs(state)[0];
+
+    if (!pair) {
+      writeState(state);
+      return { status: 503, payload: { ok: false, error: 'No storage available' } };
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const client = {
+      ...cleanDevice(body.device, 'client'),
+      vaultName: safePathName(body.vaultName || 'My Vault', 'My Vault'),
+    };
+    const taken = new Set(Object.values(pair.clients || {}).map((device) => safePathName(device.remotePathPrefix || device.name || 'Client')));
+    const basePrefix = safePathName(client.name || client.id, 'Client');
+    let remotePathPrefix = basePrefix;
+    let suffix = 2;
+    while (taken.has(remotePathPrefix)) {
+      remotePathPrefix = `${basePrefix} ${suffix}`;
+      suffix += 1;
+    }
+
+    client.remotePathPrefix = remotePathPrefix;
+    pair.clients[client.id] = client;
+    pair.tokens[token] = client.id;
+
+    writeState(state);
     return pairPayload(pair, { token });
   },
 

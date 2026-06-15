@@ -5,7 +5,7 @@ Private folder cloud with two desktop apps:
 - `Nubem Server` runs on the HDD/storage PC.
 - `Nubem Drive` runs on client PCs.
 
-Clients link to a server vault with a code. After that, `Add to Nubem` copies selected folders into that vault and resumes missing files if the connection drops.
+Clients get their own vault automatically. After that, `Add to Nubem` copies selected folders into that client's vault and resumes missing files if the connection drops.
 
 ## Use
 
@@ -15,7 +15,6 @@ Clients link to a server vault with a code. After that, `Add to Nubem` copies se
 2. Open `Nubem Server`.
 3. Click `Add storage`.
 4. Choose the HDD, drive mount, or folder to allocate to Nubem.
-5. Click the vault code to copy it, then enter it on a client PC.
 
 The server screen shows the vaults, connected clients, GB used, and status.
 
@@ -23,10 +22,10 @@ The server screen shows the vaults, connected clients, GB used, and status.
 
 1. Install `Nubem Drive`.
 2. Open `Nubem Drive`.
-3. Enter the vault code from the server.
+3. Wait for Nubem Drive to create its vault.
 4. Right-click any local folder and choose `Add to Nubem`.
 
-The folder is copied into the linked server vault. If the connection drops, the client resumes the missing files later.
+The folder is copied into that client's folder inside the server storage. If the connection drops, the client resumes the missing files later.
 
 ### Expected Roles
 
@@ -39,7 +38,7 @@ The folder is copied into the linked server vault. If the connection drops, the 
 ### Nubem Server
 
 - Linux app for the HDD/storage machine.
-- Adds storage folders that clients can join by code.
+- Adds storage folders that hold client vaults.
 - Installs the user service `nubem-server-storage.service`.
 - Keeps server state in `~/.config/nubem-server/state.json`.
 

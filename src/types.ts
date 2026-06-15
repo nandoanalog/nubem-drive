@@ -11,6 +11,7 @@ export type CloudFolder = {
   token?: string
   code?: string
   codeExpiresAt?: string
+  remotePathPrefix?: string
   storageName?: string
   sizeBytes?: number
   sizeLabel: string

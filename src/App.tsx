@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   ArrowDown,
@@ -12,9 +12,7 @@ import {
   Folder,
   FolderOpen,
   HardDrive,
-  KeyRound,
   Laptop,
-  Link2,
   Pause,
   Pencil,
   Plus,
@@ -23,13 +21,12 @@ import {
   Search,
   Trash2,
   UploadCloud,
-  X,
 } from 'lucide-react'
 import './App.css'
 import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
-type PairBusy = 'join' | 'reset' | null
+type PairBusy = 'retry' | null
 type RemoteSortKey = 'name' | 'modified' | 'size'
 type SortDirection = 'asc' | 'desc'
 
@@ -104,12 +101,12 @@ function clientVaults(state: AppState) {
 }
 
 function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): ConnectionSummary {
-  if (busy === 'join') {
+  if (busy === 'retry') {
     return {
-      actionLabel: 'Link',
-      detail: `Checking the code on ${defaultRelayHost}`,
+      actionLabel: 'Retry',
+      detail: 'Looking for your Nubem Server',
       icon: RefreshCcw,
-      title: 'Connecting to vault',
+      title: 'Setting up your vault',
       tone: 'connecting',
     }
   }
@@ -148,21 +145,11 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
 
   if (state.pairing.status === 'error') {
     return {
-      actionLabel: 'Fix',
-      detail: state.pairing.message || 'The relay or storage PC did not respond',
-      icon: AlertTriangle,
-      title: 'Connection failed',
+      actionLabel: 'Retry',
+      detail: state.pairing.message || 'No storage is available yet',
+      icon: RefreshCcw,
+      title: 'Storage unavailable',
       tone: 'error',
-    }
-  }
-
-  if (state.pairing.status === 'waiting') {
-    return {
-      actionLabel: 'Code',
-      detail: 'Pair code is ready; waiting for another PC to join',
-      icon: KeyRound,
-      title: 'Waiting for device',
-      tone: 'waiting',
     }
   }
 
@@ -178,27 +165,12 @@ function connectionSummary(state: AppState, busy: PairBusy = null, error = ''): 
   }
 
   return {
-    actionLabel: 'Link',
-    detail: 'Open Link and enter the vault code from the storage PC',
-    icon: Link2,
-    title: 'Not connected to a vault',
+    actionLabel: 'Retry',
+    detail: 'Your vault is created automatically',
+    icon: RefreshCcw,
+    title: 'Setting up your vault',
     tone: 'idle',
   }
-}
-
-function formatPairCode(value?: string) {
-  const clean = (value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
-  return clean.match(/.{1,4}/g)?.join('-') || clean
-}
-
-function pairingLine(state: AppState) {
-  const joined = clientVaults(state).length
-  const shared = state.folders.filter((folder) => folder.vaultRole !== 'client').length
-  if (joined > 0 && (state.pairing.status === 'error' || state.pairing.status === 'offline')) return 'Reconnecting'
-  if (joined > 0) return joined === 1 ? 'Connected' : `${joined} vaults connected`
-  if (shared > 0) return shared === 1 ? '1 storage vault' : `${shared} storage vaults`
-  if (state.pairing.status === 'error') return 'Check host'
-  return 'No vaults'
 }
 
 function roleBadge(state: AppState) {
@@ -219,12 +191,6 @@ const statusIcons: Record<FolderStatus, typeof Cloud> = {
 }
 
 const visibleUpdateStatuses = new Set(['available', 'downloading', 'ready', 'installing', 'error'])
-
-function deviceRoleLabel(role?: string) {
-  if (role === 'Storage node' || role === 'storage') return 'Server'
-  if (role === 'This PC') return 'This PC'
-  return role || 'Client'
-}
 
 function updateTitle(state: AppState) {
   const latest = state.updates.latestVersion ? ` ${state.updates.latestVersion}` : ''
@@ -285,8 +251,6 @@ function App() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<FilterKey>('all')
   const [isLoading, setIsLoading] = useState(true)
-  const [isPairPanelOpen, setIsPairPanelOpen] = useState(false)
-  const [pairCode, setPairCode] = useState('')
   const [pairBusy, setPairBusy] = useState<PairBusy>(null)
   const [pairError, setPairError] = useState('')
   const [remoteListing, setRemoteListing] = useState<RemoteListing | null>(null)
@@ -400,7 +364,7 @@ function App() {
   async function chooseFolders() {
     if (!api) return
     if (!isServerApp && !selectedIsLinkedClientVault) {
-      setIsPairPanelOpen(true)
+      await refreshConnection()
       return
     }
 
@@ -492,34 +456,19 @@ function App() {
     }
   }
 
-  async function joinPairing(event: FormEvent) {
-    event.preventDefault()
+  async function refreshConnection() {
     if (!api) return
-    setPairBusy('join')
+    setPairBusy('retry')
     setPairError('')
     try {
-      const nextState = await api.joinPairing(defaultRelayHost, pairCode)
+      const nextState = await api.refreshPairing()
       const joinedVault = clientVaults(nextState)[0]
       setState(nextState)
       if (joinedVault) {
         setSelectedId(joinedVault.id)
       }
-      setPairCode('')
     } catch (error) {
-      setPairError(error instanceof Error ? error.message : 'Could not join')
-    } finally {
-      setPairBusy(null)
-    }
-  }
-
-  async function resetPairing() {
-    if (!api) return
-    setPairBusy('reset')
-    setPairError('')
-    try {
-      setState(await api.resetPairing())
-    } catch (error) {
-      setPairError(error instanceof Error ? error.message : 'Could not reset')
+      setPairError(error instanceof Error ? error.message : 'Could not set up vault')
     } finally {
       setPairBusy(null)
     }
@@ -576,7 +525,7 @@ function App() {
         {!isServerApp ? (
           <SidebarConnectionIndicator
             connection={connection}
-            onOpen={() => setIsPairPanelOpen(true)}
+            onOpen={refreshConnection}
           />
         ) : null}
 
@@ -595,16 +544,6 @@ function App() {
               <Search size={18} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
             </label>
-            {!isServerApp ? (
-              <button
-                className={`icon-button link-button ${connection.tone}`}
-                onClick={() => setIsPairPanelOpen((isOpen) => !isOpen)}
-                title={`${connection.title}: ${connection.detail}`}
-                aria-label={`${connection.title}: ${connection.detail}`}
-              >
-                <Link2 size={18} />
-              </button>
-            ) : null}
             {visibleUpdateStatuses.has(state.updates.status) ? (
               <button
                 className={`icon-button update-button ${state.updates.status}`}
@@ -636,20 +575,7 @@ function App() {
           <ConnectionStrip
             busy={pairBusy}
             error={pairError}
-            onOpen={() => setIsPairPanelOpen(true)}
-            state={state}
-          />
-        ) : null}
-
-        {!isServerApp && isPairPanelOpen ? (
-          <PairPanel
-            busy={pairBusy}
-            error={pairError}
-            onClose={() => setIsPairPanelOpen(false)}
-            onJoin={joinPairing}
-            onReset={resetPairing}
-            pairCode={pairCode}
-            setPairCode={setPairCode}
+            onOpen={refreshConnection}
             state={state}
           />
         ) : null}
@@ -658,9 +584,9 @@ function App() {
           <section className={`folder-browser ${selectedIsClientVault ? 'remote-panel' : ''}`} aria-label={selectedIsClientVault ? 'Vault files' : isServerApp ? 'Vaults' : 'Cloud folders'}>
             {selectedIsClientVault && !selectedIsLinkedClientVault ? (
               <div className="empty-state action-state">
-                <button className="primary-button" onClick={() => setIsPairPanelOpen(true)}>
-                  <Link2 size={17} />
-                  Link vault
+                <button className="primary-button" onClick={refreshConnection}>
+                  <RefreshCcw size={17} />
+                  Set up vault
                 </button>
               </div>
             ) : selectedIsClientVault ? (
@@ -810,12 +736,6 @@ function App() {
                       Add to Nubem
                     </button>
                   </section>
-                ) : null}
-
-                {selectedFolder.code && !selectedIsClientVault ? (
-                  <button className="vault-code" onClick={() => navigator.clipboard?.writeText(selectedFolder.code || '')}>
-                    {formatPairCode(selectedFolder.code)}
-                  </button>
                 ) : null}
 
               </>
@@ -1054,7 +974,7 @@ function ConnectionStrip({
         <span>{connection.detail}</span>
       </span>
       <button className="connection-action" onClick={onOpen} type="button">
-        <Link2 size={16} />
+        <RefreshCcw size={16} />
         <span>{connection.actionLabel}</span>
       </button>
     </section>
@@ -1084,100 +1004,6 @@ function SidebarConnectionIndicator({
   )
 }
 
-function PairPanel({
-  busy,
-  error,
-  onClose,
-  onJoin,
-  onReset,
-  pairCode,
-  setPairCode,
-  state,
-}: {
-  busy: PairBusy
-  error: string
-  onClose: () => void
-  onJoin: (event: FormEvent) => void
-  onReset: () => void
-  pairCode: string
-  setPairCode: (value: string) => void
-  state: AppState
-}) {
-  const connection = connectionSummary(state, busy, error)
-  const ConnectionIcon = connection.icon
-  const pairingMessage = !error && state.pairing.status !== 'error' ? state.pairing.message : ''
-  const linkedDevices = state.devices.filter((device) => device.id !== state.currentDevice.id)
-
-  return (
-    <section className="pair-panel" aria-label="Link devices">
-      <div className="pair-panel-head">
-        <div>
-          <strong>Link</strong>
-          <span>{pairingLine(state)}</span>
-        </div>
-        <div className="pair-panel-actions">
-          <button className="icon-button compact" onClick={onClose} title="Close" aria-label="Close">
-            <X size={17} />
-          </button>
-        </div>
-      </div>
-
-      <div className={`pair-status ${connection.tone}`}>
-        <ConnectionIcon size={18} />
-        <span>
-          <strong>{connection.title}</strong>
-          <span>{connection.detail}</span>
-        </span>
-      </div>
-
-      <div className="pair-grid single">
-        <form className="pair-card pair-form" onSubmit={onJoin}>
-          <Laptop size={19} />
-          <strong>Join</strong>
-          <label>
-            <span>Code</span>
-            <input
-              autoCapitalize="characters"
-              inputMode="text"
-              maxLength={14}
-              spellCheck={false}
-              value={pairCode}
-              onChange={(event) => setPairCode(formatPairCode(event.target.value))}
-              placeholder="ABCD-2345-WXYZ"
-            />
-          </label>
-          <button className="primary-button" disabled={busy === 'join'} type="submit">
-            {busy === 'join' ? '...' : 'Join'}
-          </button>
-        </form>
-      </div>
-
-      <div className="pair-footer">
-        <div className="linked-devices">
-          {linkedDevices.length === 0 ? (
-            <span className="quiet-chip">
-              <KeyRound size={14} />
-              {state.pairing.status === 'waiting' ? 'Code ready' : 'No devices'}
-            </span>
-          ) : (
-            linkedDevices.map((device) => (
-              <span className="quiet-chip" key={device.id} title={deviceRoleLabel(device.role)}>
-                <Laptop size={14} />
-                {device.name}
-              </span>
-            ))
-          )}
-        </div>
-        <button className="text-button" disabled={busy === 'reset'} onClick={onReset}>
-          Reset
-        </button>
-      </div>
-
-      {pairingMessage ? <div className="pair-message">{pairingMessage}</div> : null}
-    </section>
-  )
-}
-
 function FolderRow({
   folder,
   isSelected,
@@ -1197,7 +1023,7 @@ function FolderRow({
         </span>
         <strong>{folder.name}</strong>
       </span>
-      <span className="mode-pill" title={folder.vaultRole === 'client' ? 'Joined' : 'Storage'} aria-label={folder.vaultRole === 'client' ? 'Joined' : 'Storage'}>
+      <span className="mode-pill" title={folder.vaultRole === 'client' ? 'Vault' : 'Storage'} aria-label={folder.vaultRole === 'client' ? 'Vault' : 'Storage'}>
         {folder.vaultRole === 'client' ? <Download size={15} /> : <HardDrive size={15} />}
       </span>
       <span className={`status-pill ${folder.status}`} title={statusCopy[folder.status]} aria-label={statusCopy[folder.status]}>
