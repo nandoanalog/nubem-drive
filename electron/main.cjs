@@ -51,6 +51,79 @@ const relayChunkSize = 256 * 1024;
 
 const now = () => new Date().toISOString();
 
+const writeJsonFileAtomic = (file, value) => {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  fs.renameSync(tmp, file);
+};
+
+const backupUnreadableState = (file) => {
+  try {
+    if (fs.existsSync(file)) {
+      fs.copyFileSync(file, `${file}.corrupt-${Date.now()}.bak`);
+    }
+  } catch {
+    // Keep startup alive even if the backup cannot be written.
+  }
+};
+
+const readJsonFile = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+  } catch {
+    return null;
+  }
+};
+
+const mergeExistingServerVaultsOnEmptyWrite = (file, normalized) => {
+  if (!isServerApp || normalized.folders?.length) {
+    return normalized;
+  }
+
+  const existing = readJsonFile(file);
+  const existingFolders = Array.isArray(existing?.folders)
+    ? existing.folders.filter((folder) => folder.vaultRole !== 'client')
+    : [];
+
+  if (!existingFolders.length) {
+    return normalized;
+  }
+
+  const existingPairing = existing.pairing || {};
+  const existingStorageNode = existing.storageNode || {};
+  const existingDevice = existing.currentDevice || {};
+  const existingDevices = Array.isArray(existing.devices) ? existing.devices : [];
+
+  return {
+    ...normalized,
+    storageNode: {
+      ...normalized.storageNode,
+      name: existingStorageNode.name || normalized.storageNode?.name,
+      path: existingStorageNode.path || normalized.storageNode?.path,
+    },
+    currentDevice: existingDevice.id
+      ? {
+          ...normalized.currentDevice,
+          id: existingDevice.id,
+          name: existingDevice.name || normalized.currentDevice?.name,
+          platform: existingDevice.platform || normalized.currentDevice?.platform,
+        }
+      : normalized.currentDevice,
+    pairing: {
+      ...normalized.pairing,
+      pairId: normalized.pairing?.pairId || existingPairing.pairId,
+      token: normalized.pairing?.token || existingPairing.token,
+      status: existingPairing.status === 'linked' ? 'linked' : normalized.pairing?.status,
+      storageName: normalized.pairing?.storageName || existingPairing.storageName,
+      linkedAt: normalized.pairing?.linkedAt || existingPairing.linkedAt,
+      lastSeenAt: normalized.pairing?.lastSeenAt || existingPairing.lastSeenAt,
+    },
+    folders: existingFolders,
+    devices: existingDevices.length > (normalized.devices?.length || 0) ? existingDevices : normalized.devices,
+  };
+};
+
 const updatePlatformKey = () => {
   const suffix = isServerApp ? '-server' : '';
   if (process.platform === 'win32') return `win32-x64${suffix}`;
@@ -418,8 +491,7 @@ const ensureState = () => {
         : [];
 
       if (storageFolders.length > 0) {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, JSON.stringify({
+        writeJsonFileAtomic(file, {
           ...legacyState,
           appMode: 'server',
           pairing: {
@@ -429,7 +501,7 @@ const ensureState = () => {
           },
           folders: storageFolders,
           syncJobs: [],
-        }, null, 2));
+        });
       }
     } catch {
       // Start fresh if the old client state cannot be read.
@@ -437,8 +509,7 @@ const ensureState = () => {
   }
 
   if (!fs.existsSync(file)) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(makeInitialState(), null, 2));
+    writeJsonFileAtomic(file, makeInitialState());
   }
 
   try {
@@ -447,16 +518,16 @@ const ensureState = () => {
     writeState(state);
     return state;
   } catch {
+    backupUnreadableState(file);
     const fresh = makeInitialState();
-    fs.writeFileSync(file, JSON.stringify(fresh, null, 2));
+    writeJsonFileAtomic(file, fresh);
     return fresh;
   }
 };
 
 const writeState = (state) => {
-  const normalized = normalizeState(state);
-  fs.mkdirSync(path.dirname(dataFile()), { recursive: true });
-  fs.writeFileSync(dataFile(), JSON.stringify(normalized, null, 2));
+  const normalized = mergeExistingServerVaultsOnEmptyWrite(dataFile(), normalizeState(state));
+  writeJsonFileAtomic(dataFile(), normalized);
   return normalized;
 };
 
