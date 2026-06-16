@@ -243,18 +243,28 @@ const pairFoldersForToken = (pair, token) => {
 const pairClientVaultsForToken = (pair, token) => {
   if (tokenRole(pair, token) !== 'storage') return [];
 
-  return Object.values(pair.clients || {}).map((client) => {
+  const byPrefix = new Map();
+  for (const client of Object.values(pair.clients || {})) {
     const age = Date.now() - new Date(client.lastSeenAt || 0).getTime();
     const remotePathPrefix = safePathName(client.remotePathPrefix || client.name || 'Client', 'Client');
-
-    return {
+    const vault = {
+      id: client.id,
       name: safePathName(client.vaultName || 'My Vault', 'My Vault'),
       clientName: client.name || 'Client',
       remotePathPrefix,
       status: age < onlineWindowMs ? 'online' : 'sleeping',
       lastSeenAt: client.lastSeenAt || '',
     };
-  });
+    const existing = byPrefix.get(remotePathPrefix);
+    const existingSeen = new Date(existing?.lastSeenAt || 0).getTime();
+    const nextSeen = new Date(vault.lastSeenAt || 0).getTime();
+
+    if (!existing || nextSeen >= existingSeen) {
+      byPrefix.set(remotePathPrefix, vault);
+    }
+  }
+
+  return Array.from(byPrefix.values());
 };
 
 const findPairByCode = (state, code) =>

@@ -399,6 +399,9 @@ const validateRelativePath = (relativePath = '') => {
   return parts.join(path.sep);
 };
 
+const normalizeCloudRelativePath = (relativePath = '') =>
+  validateRelativePath(relativePath).split(path.sep).filter(Boolean).join('/');
+
 const resolveCloudPath = (state, folderId, relativePath = '') => {
   const folder = state.folders.find((item) => item.id === folderId);
   if (!folder || folder.vaultRole === 'client') {
@@ -418,9 +421,40 @@ const resolveCloudPath = (state, folderId, relativePath = '') => {
 
 const relativeCloudPath = (root, target) => path.relative(root, target).split(path.sep).filter(Boolean).join('/');
 
+const clientVaultPrefixes = (folder) =>
+  new Set((Array.isArray(folder.clientVaults) ? folder.clientVaults : [])
+    .map((vault) => normalizeCloudRelativePath(vault.remotePathPrefix || ''))
+    .filter(Boolean));
+
+const ensureKnownClientVaultRoot = (folder, root, target, relativePath = '') => {
+  const safeRelativePath = normalizeCloudRelativePath(relativePath);
+  if (!safeRelativePath || !clientVaultPrefixes(folder).has(safeRelativePath)) {
+    return false;
+  }
+
+  if (target === root || !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error('Path outside folder');
+  }
+
+  fs.mkdirSync(target, { recursive: true });
+  return true;
+};
+
+const statCloudTarget = (folder, root, target, relativePath = '') => {
+  try {
+    return fs.statSync(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT' && ensureKnownClientVaultRoot(folder, root, target, relativePath)) {
+      return fs.statSync(target);
+    }
+
+    throw error;
+  }
+};
+
 const listCloudFolder = (state, folderId, relativePath = '') => {
-  const { root, target } = resolveCloudPath(state, folderId, relativePath);
-  const stat = fs.statSync(target);
+  const { folder, root, target } = resolveCloudPath(state, folderId, relativePath);
+  const stat = statCloudTarget(folder, root, target, relativePath);
 
   if (!stat.isDirectory()) {
     throw new Error('Not a folder');
@@ -457,8 +491,8 @@ const listCloudFolder = (state, folderId, relativePath = '') => {
 };
 
 const statCloudPath = (state, folderId, relativePath = '') => {
-  const { root, target } = resolveCloudPath(state, folderId, relativePath);
-  const stat = fs.statSync(target);
+  const { folder, root, target } = resolveCloudPath(state, folderId, relativePath);
+  const stat = statCloudTarget(folder, root, target, relativePath);
   const type = stat.isDirectory() ? 'directory' : 'file';
   return {
     exists: true,

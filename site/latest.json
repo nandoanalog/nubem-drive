@@ -1,5 +1,5 @@
 {
-  "latest": "0.0.48",
+  "latest": "0.0.49",
   "platforms": {
     "linux-x64": {
       "version": "0.0.48",
@@ -9,10 +9,10 @@
       "type": "deb"
     },
     "linux-x64-server": {
-      "version": "0.0.48",
-      "url": "https://drive.nubem.org/downloads/Nubem-Server-0.0.48-amd64.deb",
-      "fileName": "Nubem-Server-0.0.48-amd64.deb",
-      "sha256": "e372c71feab79e48923a2ee90e583cef760042a6355dfe375277a56b4957cdd8",
+      "version": "0.0.49",
+      "url": "https://drive.nubem.org/downloads/Nubem-Server-0.0.49-amd64.deb",
+      "fileName": "Nubem-Server-0.0.49-amd64.deb",
+      "sha256": "947305fba632570b4a8e67a5f0b3d884b9f6c1c55e121186f2369f3136b88fd5",
       "type": "deb"
     },
     "win32-x64": {
