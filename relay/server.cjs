@@ -1080,7 +1080,7 @@ const handlers = {
     request.error = body.error ? String(body.error).slice(0, 500) : '';
     request.result = body.result || null;
     request.updatedAt = now();
-    if (body.error) {
+    if (body.error || request.type === 'upload') {
       fs.rmSync(chunkDir(request.id), { recursive: true, force: true });
     }
     writeState(state);
