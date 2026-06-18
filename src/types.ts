@@ -131,6 +131,28 @@ export type ActivityItem = {
   at: string
 }
 
+export type TrafficTransfer = {
+  id: string
+  direction: 'upload' | 'download'
+  vaultId: string
+  vaultName: string
+  clientName: string
+  fileName: string
+  relativePath: string
+  totalBytes: number
+  transferredBytes: number
+  rateBytesPerSecond: number
+  startedAt: string
+  updatedAt: string
+}
+
+export type TrafficState = {
+  updatedAt: string
+  uploadBytesPerSecond: number
+  downloadBytesPerSecond: number
+  active: TrafficTransfer[]
+}
+
 export type SyncFile = {
   sourcePath: string
   relativePath: string
@@ -182,6 +204,7 @@ export type AppState = {
   updates: UpdateState
   folders: CloudFolder[]
   devices: Device[]
+  traffic: TrafficState
   syncJobs: SyncJob[]
   activity: ActivityItem[]
 }

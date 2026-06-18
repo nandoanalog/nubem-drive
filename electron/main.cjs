@@ -246,6 +246,12 @@ const makeInitialState = () => {
       storageName: isServerApp ? os.hostname() : '',
     },
     folders: isServerApp ? [] : [makeClientVault()],
+    traffic: {
+      updatedAt: now(),
+      uploadBytesPerSecond: 0,
+      downloadBytesPerSecond: 0,
+      active: [],
+    },
     syncJobs: [],
     activity: [],
     updates: updateDefaults(),

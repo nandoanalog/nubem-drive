@@ -24,7 +24,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob, TrafficState, TrafficTransfer } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'retry' | null
@@ -81,6 +81,12 @@ const demoState: AppState = {
   devices: [
     { id: 'demo-device', name: 'This PC', role: 'Client', status: 'online', address: 'Local' },
   ],
+  traffic: {
+    updatedAt: '',
+    uploadBytesPerSecond: 0,
+    downloadBytesPerSecond: 0,
+    active: [],
+  },
   syncJobs: [],
   activity: [],
 }
@@ -474,6 +480,43 @@ function onlineClientCount(folder: CloudFolder) {
   return folder.devices.length
 }
 
+function currentTraffic(state: AppState): TrafficState {
+  const traffic = state.traffic || {
+    updatedAt: '',
+    uploadBytesPerSecond: 0,
+    downloadBytesPerSecond: 0,
+    active: [],
+  }
+  const cutoff = Date.now() - 20_000
+  const active = Array.isArray(traffic.active)
+    ? traffic.active.filter((transfer) => new Date(transfer.updatedAt || 0).getTime() >= cutoff)
+    : []
+
+  return {
+    updatedAt: traffic.updatedAt || '',
+    uploadBytesPerSecond: active
+      .filter((transfer) => transfer.direction === 'download')
+      .reduce((sum, transfer) => sum + Math.max(0, transfer.rateBytesPerSecond || 0), 0),
+    downloadBytesPerSecond: active
+      .filter((transfer) => transfer.direction === 'upload')
+      .reduce((sum, transfer) => sum + Math.max(0, transfer.rateBytesPerSecond || 0), 0),
+    active,
+  }
+}
+
+function formatRate(bytesPerSecond: number) {
+  return `${formatSizeLabel(Math.max(0, bytesPerSecond || 0))}/s`
+}
+
+function transferPercent(transfer: TrafficTransfer) {
+  if (!transfer.totalBytes) return 0
+  return Math.max(0, Math.min(100, Math.round((transfer.transferredBytes / transfer.totalBytes) * 100)))
+}
+
+function transferDirectionLabel(transfer: TrafficTransfer) {
+  return transfer.direction === 'upload' ? 'Uploading' : 'Downloading'
+}
+
 function matchesFilter(folder: CloudFolder, filter: FilterKey) {
   if (filter === 'local') return folder.localMode === 'local' || folder.localMode === 'mirror'
   if (filter === 'online') return folder.localMode === 'online'
@@ -494,6 +537,7 @@ function App() {
   const [remoteError, setRemoteError] = useState('')
   const [remoteNotice, setRemoteNotice] = useState('')
   const [shareDialog, setShareDialog] = useState<ShareDialogState>(null)
+  const [trafficExpanded, setTrafficExpanded] = useState(false)
 
   const api = window.nubemDrive
 
@@ -547,6 +591,7 @@ function App() {
   const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
   const selectedIsLinkedClientVault = selectedIsClientVault && Boolean(selectedFolder?.pairId && selectedFolder.token)
   const isServerApp = state.appMode === 'server'
+  const serverTraffic = useMemo(() => currentTraffic(state), [state])
   const connection = connectionSummary(state, pairBusy, pairError)
   const canChooseFolders = isServerApp || Boolean(selectedIsLinkedClientVault)
   const chooseFoldersTitle = isServerApp
@@ -885,6 +930,14 @@ function App() {
               />
             ) : (
               <>
+                {isServerApp ? (
+                  <ServerTrafficPanel
+                    expanded={trafficExpanded}
+                    onToggle={() => setTrafficExpanded((current) => !current)}
+                    traffic={serverTraffic}
+                  />
+                ) : null}
+
                 <div className="browser-toolbar">
                   {isServerApp ? (
                     <div className="server-vault-head" aria-hidden="true">
@@ -1169,6 +1222,68 @@ function RemoteBrowser({
           </div>
         )})}
       </div>
+    </section>
+  )
+}
+
+function ServerTrafficPanel({
+  expanded,
+  onToggle,
+  traffic,
+}: {
+  expanded: boolean
+  onToggle: () => void
+  traffic: TrafficState
+}) {
+  const activeCount = traffic.active.length
+
+  return (
+    <section className={expanded ? 'server-traffic expanded' : 'server-traffic'} aria-label="Server traffic">
+      <button className="server-traffic-summary" onClick={onToggle} type="button">
+        <span className="traffic-label">
+          <RefreshCcw size={16} />
+          <strong>Traffic</strong>
+        </span>
+        <span className="traffic-metric down" title="Inbound">
+          <ArrowDown size={15} />
+          {formatRate(traffic.downloadBytesPerSecond)}
+        </span>
+        <span className="traffic-metric up" title="Outbound">
+          <ArrowUp size={15} />
+          {formatRate(traffic.uploadBytesPerSecond)}
+        </span>
+        <span className="traffic-count">{activeCount}</span>
+        <ChevronRight className="traffic-chevron" size={17} />
+      </button>
+
+      {expanded ? (
+        <div className="server-traffic-detail">
+          {activeCount === 0 ? (
+            <div className="traffic-empty">No active transfers</div>
+          ) : (
+            traffic.active.map((transfer) => {
+              const percent = transferPercent(transfer)
+              const DirectionIcon = transfer.direction === 'upload' ? ArrowDown : ArrowUp
+              return (
+                <div className="traffic-row" key={transfer.id}>
+                  <span className={`traffic-row-icon ${transfer.direction}`}>
+                    <DirectionIcon size={16} />
+                  </span>
+                  <span className="traffic-row-copy">
+                    <strong>{transfer.vaultName}</strong>
+                    <small>{transfer.clientName} · {transfer.fileName}</small>
+                  </span>
+                  <span className="traffic-row-state">{transferDirectionLabel(transfer)}</span>
+                  <span className="traffic-row-progress" title={`${formatSizeLabel(transfer.transferredBytes)} of ${formatSizeLabel(transfer.totalBytes)}`}>
+                    <span style={{ width: `${percent}%` }} />
+                  </span>
+                  <span className="traffic-row-rate">{formatRate(transfer.rateBytesPerSecond)}</span>
+                </div>
+              )
+            })
+          )}
+        </div>
+      ) : null}
     </section>
   )
 }

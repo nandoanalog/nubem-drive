@@ -15,6 +15,7 @@ const relayResultTimeoutMs = 45 * 1000;
 const relayRequestLockTtlMs = 10 * 60 * 1000;
 const deleteRequestPrefix = '.nubem-command/delete/';
 const processingRelayRequests = new Set();
+const trafficSamples = new Map();
 const dataFile = () =>
   process.env.NUBEM_DRIVE_STATE ||
   path.join(os.homedir(), process.platform === 'win32' ? 'AppData/Roaming/nubem-drive/state.json' : '.config/nubem-drive/state.json');
@@ -109,6 +110,47 @@ const formatBytes = (bytes) => {
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 };
 
+const emptyTraffic = () => ({
+  updatedAt: now(),
+  uploadBytesPerSecond: 0,
+  downloadBytesPerSecond: 0,
+  active: [],
+});
+
+const normalizeTraffic = (traffic = {}) => {
+  const cutoff = Date.now() - 20 * 1000;
+  const active = Array.isArray(traffic.active)
+    ? traffic.active
+        .filter((transfer) => new Date(transfer?.updatedAt || 0).getTime() >= cutoff)
+        .map((transfer) => ({
+          id: String(transfer.id || ''),
+          direction: transfer.direction === 'download' ? 'download' : 'upload',
+          vaultId: String(transfer.vaultId || ''),
+          vaultName: String(transfer.vaultName || 'Vault'),
+          clientName: String(transfer.clientName || 'Client'),
+          fileName: String(transfer.fileName || 'File'),
+          relativePath: String(transfer.relativePath || ''),
+          totalBytes: Number.isFinite(transfer.totalBytes) ? Math.max(0, transfer.totalBytes) : 0,
+          transferredBytes: Number.isFinite(transfer.transferredBytes) ? Math.max(0, transfer.transferredBytes) : 0,
+          rateBytesPerSecond: Number.isFinite(transfer.rateBytesPerSecond) ? Math.max(0, transfer.rateBytesPerSecond) : 0,
+          startedAt: String(transfer.startedAt || now()),
+          updatedAt: String(transfer.updatedAt || now()),
+        }))
+        .filter((transfer) => transfer.id)
+    : [];
+
+  return {
+    updatedAt: String(traffic.updatedAt || now()),
+    uploadBytesPerSecond: active
+      .filter((transfer) => transfer.direction === 'download')
+      .reduce((sum, transfer) => sum + transfer.rateBytesPerSecond, 0),
+    downloadBytesPerSecond: active
+      .filter((transfer) => transfer.direction === 'upload')
+      .reduce((sum, transfer) => sum + transfer.rateBytesPerSecond, 0),
+    active,
+  };
+};
+
 const mapRelayDevice = (device, currentDeviceId) => ({
   id: device.id,
   name: device.name || 'Device',
@@ -141,6 +183,22 @@ const clientVaultsFromPayload = (payload) => {
     .slice(0, 128);
 };
 
+const normalizeRemotePath = (relativePath = '') =>
+  String(relativePath || '').replace(/\\/g, '/').split('/').filter(Boolean).join('/');
+
+const requestVaultInfo = (folder, request) => {
+  const relativePath = normalizeRemotePath(request.relativePath || '');
+  const firstSegment = relativePath.split('/').filter(Boolean)[0] || '';
+  const vaults = Array.isArray(folder.clientVaults) ? folder.clientVaults : [];
+  const vault = vaults.find((item) => normalizeRemotePath(item.remotePathPrefix || '') === firstSegment);
+
+  return {
+    vaultId: vault?.remotePathPrefix || firstSegment || folder.id,
+    vaultName: vault?.name || firstSegment || folder.name || 'Vault',
+    clientName: vault?.clientName || firstSegment || 'Client',
+  };
+};
+
 const makeInitialState = () => {
   const deviceId = crypto.randomUUID();
   return {
@@ -157,6 +215,7 @@ const makeInitialState = () => {
     },
     folders: [],
     devices: [{ id: deviceId, name: os.hostname(), role: 'Storage node', status: 'online', address: 'Relay' }],
+    traffic: emptyTraffic(),
     activity: [],
   };
 };
@@ -195,6 +254,7 @@ const normalizeState = (rawState) => {
     currentDevice,
     pairing,
     folders,
+    traffic: normalizeTraffic(state.traffic),
     activity: Array.isArray(state.activity) ? state.activity : [],
   };
 };
@@ -229,6 +289,77 @@ const addActivity = (state, type, label, detail) => ({
     ...(Array.isArray(state.activity) ? state.activity : []),
   ].slice(0, 16),
 });
+
+const writeTraffic = (activeTransfers) => {
+  const state = ensureState();
+  const active = activeTransfers.filter((transfer) => transfer.transferredBytes < transfer.totalBytes || transfer.rateBytesPerSecond > 0);
+  return writeState({
+    ...state,
+    traffic: normalizeTraffic({
+      updatedAt: now(),
+      active,
+    }),
+  });
+};
+
+const reportTransfer = (folder, request, direction, totalBytes, transferredBytes, force = false) => {
+  const currentTime = Date.now();
+  const sample = trafficSamples.get(request.id) || {
+    bytes: transferredBytes,
+    at: currentTime,
+    rate: 0,
+    writtenAt: 0,
+    startedAt: now(),
+  };
+  const elapsedMs = Math.max(1, currentTime - sample.at);
+  const deltaBytes = Math.max(0, transferredBytes - sample.bytes);
+  const rate = deltaBytes > 0 ? (deltaBytes * 1000) / elapsedMs : sample.rate;
+
+  if (!force && currentTime - sample.writtenAt < 900) {
+    trafficSamples.set(request.id, {
+      ...sample,
+      bytes: transferredBytes,
+      at: currentTime,
+      rate,
+    });
+    return;
+  }
+
+  const vault = requestVaultInfo(folder, request);
+  const state = ensureState();
+  const currentTraffic = normalizeTraffic(state.traffic);
+  const transfer = {
+    id: request.id,
+    direction,
+    ...vault,
+    fileName: path.basename(request.relativePath || request.fileName || 'File'),
+    relativePath: normalizeRemotePath(request.relativePath || ''),
+    totalBytes: Math.max(0, Number(totalBytes || 0)),
+    transferredBytes: Math.max(0, Number(transferredBytes || 0)),
+    rateBytesPerSecond: rate,
+    startedAt: sample.startedAt,
+    updatedAt: now(),
+  };
+
+  trafficSamples.set(request.id, {
+    bytes: transferredBytes,
+    at: currentTime,
+    rate,
+    writtenAt: currentTime,
+    startedAt: sample.startedAt,
+  });
+  writeTraffic([
+    ...currentTraffic.active.filter((item) => item.id !== request.id),
+    transfer,
+  ]);
+};
+
+const clearTransfer = (requestId) => {
+  trafficSamples.delete(requestId);
+  const state = ensureState();
+  const traffic = normalizeTraffic(state.traffic);
+  writeTraffic(traffic.active.filter((transfer) => transfer.id !== requestId));
+};
 
 const localRelayDevice = (state) => ({
   id: state.currentDevice.id,
@@ -615,15 +746,18 @@ const sendFileToRelay = async (state, folder, request) => {
   let offset = 0;
 
   try {
+    reportTransfer(folder, request, 'download', stat.size, 0, true);
     while (offset < stat.size) {
       const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
       if (bytesRead <= 0) break;
       await uploadRelayChunk(folder, request.id, index, buffer.subarray(0, bytesRead).toString('base64'));
       offset += bytesRead;
       index += 1;
+      reportTransfer(folder, request, 'download', stat.size, offset);
     }
   } finally {
     fs.closeSync(file);
+    clearTransfer(request.id);
   }
 
   return {
@@ -659,11 +793,16 @@ const receiveFileFromRelay = async (state, folder, request) => {
   const stream = fs.createWriteStream(tmpTarget);
   let completed = false;
   let receiveError = null;
+  let offset = 0;
 
   try {
+    reportTransfer(folder, request, 'upload', Number(request.totalBytes || 0), 0, true);
     for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
       const chunk = await downloadRelayChunk(folder, request.id, index);
-      stream.write(Buffer.from(chunk.data, 'base64'));
+      const buffer = Buffer.from(chunk.data, 'base64');
+      stream.write(buffer);
+      offset += buffer.length;
+      reportTransfer(folder, request, 'upload', Number(request.totalBytes || 0), offset);
     }
     completed = true;
   } catch (error) {
@@ -683,6 +822,7 @@ const receiveFileFromRelay = async (state, folder, request) => {
     if (!completed) {
       fs.rmSync(tmpTarget, { force: true });
     }
+    clearTransfer(request.id);
   }
 
   fs.renameSync(tmpTarget, target);
