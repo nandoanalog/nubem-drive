@@ -158,7 +158,7 @@ const reusableUploadRequest = (pair, nextRequest) => {
   return Object.values(pair.requests || {}).find(
     (request) =>
       request.type === 'upload' &&
-      request.status === 'uploading' &&
+      ['uploading', 'pending'].includes(request.status) &&
       request.requesterId === nextRequest.requesterId &&
       request.relativePath === nextRequest.relativePath &&
       Number(request.totalBytes || 0) === Number(nextRequest.totalBytes || 0) &&
