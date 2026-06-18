@@ -149,6 +149,14 @@ export type SyncJob = {
   rootPath: string
   rootName: string
   status: 'queued' | 'running' | 'complete' | 'error'
+  scanStatus: 'queued' | 'scanning' | 'complete'
+  queuePath: string
+  queueCursor: number
+  scanPendingDirs: Array<{
+    path: string
+    entriesPath: string
+    offset: number
+  }>
   createdAt: string
   updatedAt: string
   completedAt: string
@@ -156,6 +164,7 @@ export type SyncJob = {
   lastError: string
   totalFiles: number
   completedFiles: number
+  completedBytes: number
   totalBytes: number
   files: SyncFile[]
 }

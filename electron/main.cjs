@@ -51,6 +51,10 @@ const storageServiceName = isServerApp ? 'nubem-server-storage.service' : 'nubem
 
 const dataFile = () => path.join(app.getPath('userData'), 'state.json');
 const legacyDriveDataFile = () => path.join(app.getPath('appData'), 'nubem-drive', 'state.json');
+const syncQueueRoot = () => path.join(app.getPath('userData'), 'sync-queues');
+const syncQueueFile = (jobId) => path.join(syncQueueRoot(), `${jobId}.jsonl`);
+const syncScanDirFile = (jobId, folderPath) =>
+  path.join(syncQueueRoot(), `${jobId}.${crypto.createHash('sha1').update(folderPath).digest('hex')}.entries.jsonl`);
 const defaultRelayUrl = 'https://drive.nubem.org';
 const defaultUpdateManifestUrl = `${defaultRelayUrl}/latest.json`;
 const relayChunkSize = 4 * 1024 * 1024;
@@ -61,6 +65,8 @@ const relayResultTimeoutMs = 45 * 1000;
 const minStorageReceiveWaitMs = 15 * 60 * 1000;
 const storageReceiveWaitPerGbMs = 30 * 60 * 1000;
 const maxStorageReceiveWaitMs = 6 * 60 * 60 * 1000;
+const syncScanEntriesPerBatch = 500;
+const syncScanFilesPerBatch = 500;
 const syncUploadConcurrency = Math.max(
   1,
   Math.min(8, Number.parseInt(process.env.NUBEM_SYNC_CONCURRENCY || '4', 10) || 4)
@@ -317,9 +323,20 @@ const normalizeSyncFile = (file = {}) => ({
   error: String(file.error || ''),
 });
 
+const normalizeScanDir = (item = {}) => ({
+  path: String(item.path || ''),
+  entriesPath: String(item.entriesPath || ''),
+  offset: Number.isFinite(item.offset) ? item.offset : 0,
+});
+
 const normalizeSyncJob = (job = {}) => {
   const files = Array.isArray(job.files) ? job.files.map(normalizeSyncFile).filter((file) => file.sourcePath && file.relativePath) : [];
-  const completedFiles = files.filter((file) => file.status === 'done').length;
+  const completedFiles = Number.isFinite(job.completedFiles)
+    ? Math.max(0, job.completedFiles)
+    : files.filter((file) => file.status === 'done').length;
+  const completedBytes = Number.isFinite(job.completedBytes)
+    ? Math.max(0, job.completedBytes)
+    : files.filter((file) => file.status === 'done').reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0);
 
   return {
     id: String(job.id || crypto.randomUUID()),
@@ -328,6 +345,12 @@ const normalizeSyncJob = (job = {}) => {
     rootPath: String(job.rootPath || ''),
     rootName: String(job.rootName || 'Folder'),
     status: ['queued', 'running', 'complete', 'error'].includes(job.status) ? job.status : 'queued',
+    scanStatus: ['queued', 'scanning', 'complete'].includes(job.scanStatus) ? job.scanStatus : 'complete',
+    queuePath: String(job.queuePath || ''),
+    queueCursor: Number.isFinite(job.queueCursor) ? Math.max(0, job.queueCursor) : 0,
+    scanPendingDirs: Array.isArray(job.scanPendingDirs)
+      ? job.scanPendingDirs.map(normalizeScanDir).filter((item) => item.path)
+      : [],
     createdAt: String(job.createdAt || now()),
     updatedAt: String(job.updatedAt || now()),
     completedAt: String(job.completedAt || ''),
@@ -335,6 +358,7 @@ const normalizeSyncJob = (job = {}) => {
     lastError: String(job.lastError || ''),
     totalFiles: Number.isFinite(job.totalFiles) ? job.totalFiles : files.length,
     completedFiles,
+    completedBytes,
     totalBytes: Number.isFinite(job.totalBytes) ? job.totalBytes : files.reduce((sum, file) => sum + file.sizeBytes, 0),
     files,
   };
@@ -2018,6 +2042,7 @@ const cancelSyncJob = async (jobId) => {
     return ensureState();
   }
 
+  cleanupSyncJobFiles(job);
   const nextState = addActivity(
     applyVaultSyncStatus(
       {
@@ -2084,29 +2109,70 @@ const isStorageDevice = (device) => {
 
 const isVaultStorageOnline = (state) => state.devices.some((device) => isStorageDevice(device) && device.status === 'online');
 
-const walkFiles = (root) => {
-  const files = [];
-  const visit = (target) => {
-    const stat = fs.statSync(target);
-    if (stat.isDirectory()) {
-      for (const entry of fs.readdirSync(target)) {
-        visit(path.join(target, entry));
-      }
-      return;
-    }
-
-    if (stat.isFile()) {
-      files.push({
-        sourcePath: target,
-        sizeBytes: stat.size,
-        modifiedAt: stat.mtime.toISOString(),
-      });
-    }
-  };
-
-  visit(root);
-  return files;
+const appendJsonLines = (file, items) => {
+  if (!items.length) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${items.map((item) => JSON.stringify(item)).join('\n')}\n`);
 };
+
+const readJsonLineBatch = (file, offset = 0, limit = 1) => {
+  if (!file || !fs.existsSync(file) || limit <= 0) {
+    return { items: [], nextOffset: offset, eof: true };
+  }
+
+  const fd = fs.openSync(file, 'r');
+  const buffer = Buffer.alloc(64 * 1024);
+  const items = [];
+  let position = Math.max(0, offset);
+  let remainder = '';
+
+  try {
+    while (items.length < limit) {
+      const chunkStart = position;
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) {
+        return { items, nextOffset: position, eof: true };
+      }
+
+      const text = remainder + buffer.subarray(0, bytesRead).toString('utf8');
+      const lines = text.split('\n');
+      remainder = lines.pop() || '';
+      let consumedBytes = 0;
+
+      for (const line of lines) {
+        consumedBytes += Buffer.byteLength(`${line}\n`);
+        if (!line.trim()) continue;
+
+        try {
+          items.push(JSON.parse(line));
+        } catch {
+          // Ignore corrupt queue lines and continue with the next file.
+        }
+
+        if (items.length >= limit) {
+          return { items, nextOffset: chunkStart + consumedBytes, eof: false };
+        }
+      }
+
+      position += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return { items, nextOffset: position, eof: false };
+};
+
+const makeQueuedSyncFile = (root, rootName, sourcePath, stat) => ({
+  sourcePath,
+  relativePath: [rootName, relativeCloudPath(root, sourcePath)].filter(Boolean).join('/'),
+  sizeBytes: stat.size,
+  modifiedAt: stat.mtime.toISOString(),
+  status: 'pending',
+  attempts: 0,
+  uploadedBytes: 0,
+  error: '',
+});
 
 const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount, modifiedAt = '') => {
   const { folder, pairId, relayUrl, token } = getVaultCredentials(vaultFolderId);
@@ -2174,39 +2240,58 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, 
 };
 
 const makeUploadJob = (vaultFolderId, folderPath) => {
+  const id = crypto.randomUUID();
   const root = path.resolve(folderPath);
   const rootName = path.basename(root) || 'Folder';
-  const files = walkFiles(root).map((file) => ({
-    ...file,
-    relativePath: [rootName, relativeCloudPath(root, file.sourcePath)].filter(Boolean).join('/'),
-    status: 'pending',
-    attempts: 0,
-    error: '',
-  }));
+  const queuePath = syncQueueFile(id);
+  const stat = fs.statSync(root);
+  let scanStatus = 'complete';
+  let totalFiles = 0;
+  let totalBytes = 0;
+  let scanPendingDirs = [];
+
+  fs.mkdirSync(syncQueueRoot(), { recursive: true });
+  fs.rmSync(queuePath, { force: true });
+
+  if (stat.isDirectory()) {
+    scanStatus = 'queued';
+    scanPendingDirs = [{ path: root, entriesPath: syncScanDirFile(id, root), offset: 0 }];
+  } else if (stat.isFile()) {
+    const file = makeQueuedSyncFile(root, rootName, root, stat);
+    appendJsonLines(queuePath, [file]);
+    totalFiles = 1;
+    totalBytes = stat.size;
+  }
 
   return normalizeSyncJob({
-    id: crypto.randomUUID(),
+    id,
     type: 'upload-folder',
     vaultFolderId,
     rootPath: root,
     rootName,
-    status: files.length > 0 ? 'queued' : 'complete',
+    status: stat.isFile() || stat.isDirectory() ? 'queued' : 'complete',
+    scanStatus,
+    queuePath,
+    queueCursor: 0,
+    scanPendingDirs,
     createdAt: now(),
     updatedAt: now(),
-    completedAt: files.length > 0 ? '' : now(),
-    totalFiles: files.length,
-    totalBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
-    files,
+    completedAt: '',
+    totalFiles,
+    completedFiles: 0,
+    completedBytes: 0,
+    totalBytes,
+    files: [],
   });
 };
 
 const syncJobProgress = (job) => {
-  const completedFiles = job.files.filter((file) => file.status === 'done').length;
-  const totalFiles = Math.max(job.files.length, job.totalFiles, 0);
+  const completedFiles = Number(job.completedFiles || 0);
+  const totalFiles = Math.max(job.totalFiles, job.files.length, 0);
   return {
     completedFiles,
     totalFiles,
-    progress: totalFiles === 0 ? 100 : Math.round((completedFiles / totalFiles) * 100),
+    progress: totalFiles === 0 ? 0 : Math.round((completedFiles / totalFiles) * 100),
   };
 };
 
@@ -2276,20 +2361,30 @@ const updateSyncFile = (jobId, relativePath, patch, jobPatch = {}) =>
   }));
 
 const markSyncFileDone = (jobId, file, patch = {}) =>
-  updateSyncFile(
-    jobId,
-    file.relativePath,
-    {
-      ...patch,
-      status: 'done',
-      error: '',
-      uploadedBytes: Number(file.sizeBytes || 0),
-    },
-    {
+  updateSyncJob(jobId, (job) => {
+    const previous = job.files.find((item) => item.relativePath === file.relativePath);
+    const shouldCount = previous?.status !== 'done';
+    const sizeBytes = Number(patch.sizeBytes ?? file.sizeBytes ?? previous?.sizeBytes ?? 0) || 0;
+
+    return {
+      ...job,
+      completedFiles: shouldCount ? Number(job.completedFiles || 0) + 1 : Number(job.completedFiles || 0),
+      completedBytes: shouldCount ? Number(job.completedBytes || 0) + sizeBytes : Number(job.completedBytes || 0),
       lastError: '',
       nextAttemptAt: '',
-    }
-  );
+      files: job.files.map((item) =>
+        item.relativePath === file.relativePath
+          ? {
+              ...item,
+              ...patch,
+              status: 'done',
+              error: '',
+              uploadedBytes: Number(item.sizeBytes || sizeBytes || 0),
+            }
+          : item
+      ),
+    };
+  });
 
 const markSyncFileRetry = (jobId, file, message) => {
   const attempts = Number(file.attempts || 0) + 1;
@@ -2311,16 +2406,122 @@ const markSyncFileRetry = (jobId, file, message) => {
   );
 };
 
+const ensureScanEntriesFile = (job, dirState) => {
+  const entriesPath = dirState.entriesPath || syncScanDirFile(job.id, dirState.path);
+  if (fs.existsSync(entriesPath)) {
+    return entriesPath;
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dirState.path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() || entry.isFile())
+      .map((entry) => ({
+        name: entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+      }));
+  } catch {
+    entries = [];
+  }
+
+  appendJsonLines(entriesPath, entries);
+  if (entries.length === 0) {
+    fs.closeSync(fs.openSync(entriesPath, 'a'));
+  }
+  return entriesPath;
+};
+
+const scanSyncJobBatch = (jobId) => {
+  const state = ensureState();
+  const job = state.syncJobs.find((item) => item.id === jobId);
+  if (!job || job.scanStatus === 'complete') {
+    return state;
+  }
+
+  const pendingDirs = [...job.scanPendingDirs];
+  const queuedFiles = [];
+  let processedEntries = 0;
+
+  while (pendingDirs.length > 0 && queuedFiles.length < syncScanFilesPerBatch && processedEntries < syncScanEntriesPerBatch) {
+    const currentDir = pendingDirs.shift();
+    const entriesPath = ensureScanEntriesFile(job, currentDir);
+    const readLimit = Math.min(syncScanEntriesPerBatch - processedEntries, syncScanFilesPerBatch - queuedFiles.length);
+    const batch = readJsonLineBatch(entriesPath, currentDir.offset || 0, Math.max(1, readLimit));
+    processedEntries += batch.items.length;
+
+    for (const entry of batch.items) {
+      const target = path.join(currentDir.path, entry.name);
+      if (entry.type === 'directory') {
+        pendingDirs.push({ path: target, entriesPath: syncScanDirFile(job.id, target), offset: 0 });
+        continue;
+      }
+
+      try {
+        const stat = fs.statSync(target);
+        if (stat.isFile()) {
+          queuedFiles.push(makeQueuedSyncFile(job.rootPath, job.rootName, target, stat));
+        }
+      } catch {
+        // Files can disappear while scanning. Skip them and continue.
+      }
+    }
+
+    if (!batch.eof) {
+      pendingDirs.unshift({ ...currentDir, entriesPath, offset: batch.nextOffset });
+    } else {
+      fs.rmSync(entriesPath, { force: true });
+    }
+  }
+
+  appendJsonLines(job.queuePath || syncQueueFile(job.id), queuedFiles);
+
+  return updateSyncJob(jobId, (current) => ({
+    ...current,
+    scanStatus: pendingDirs.length > 0 ? 'scanning' : 'complete',
+    scanPendingDirs: pendingDirs,
+    status: current.status === 'running' ? 'running' : 'queued',
+    totalFiles: Number(current.totalFiles || 0) + queuedFiles.length,
+    totalBytes: Number(current.totalBytes || 0) + queuedFiles.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0),
+    lastError: pendingDirs.length > 0 ? 'Scanning files' : current.lastError,
+    nextAttemptAt: '',
+  }));
+};
+
+const readQueuedSyncFiles = (job, limit) => {
+  const batch = readJsonLineBatch(job.queuePath || syncQueueFile(job.id), job.queueCursor || 0, limit);
+  return {
+    files: batch.items.map(normalizeSyncFile).filter((file) => file.sourcePath && file.relativePath),
+    nextCursor: batch.nextOffset,
+    eof: batch.eof,
+  };
+};
+
+const cleanupSyncJobFiles = (job) => {
+  fs.rmSync(job.queuePath || syncQueueFile(job.id), { force: true });
+  try {
+    for (const entry of fs.readdirSync(syncQueueRoot())) {
+      if (entry.startsWith(`${job.id}.`) && entry.endsWith('.entries.jsonl')) {
+        fs.rmSync(path.join(syncQueueRoot(), entry), { force: true });
+      }
+    }
+  } catch {
+    // Queue cleanup should not block sync completion.
+  }
+};
+
 const finishSyncJob = (jobId) => {
   const state = updateSyncJob(jobId, (job) => ({
     ...job,
     status: 'complete',
+    scanStatus: 'complete',
     completedAt: now(),
     lastError: '',
     nextAttemptAt: '',
+    files: [],
   }));
   const job = state.syncJobs.find((item) => item.id === jobId);
   if (job) {
+    cleanupSyncJobFiles(job);
     writeState(addActivity(ensureState(), 'upload', job.rootName, `${syncJobProgress(job).totalFiles} files uploaded`));
   }
   return ensureState();
@@ -2343,7 +2544,7 @@ const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
     }
 
     const job = makeUploadJob(vaultFolderId, root);
-    if (job.totalFiles === 0) {
+    if (job.status === 'complete' && job.totalFiles === 0) {
       continue;
     }
 
@@ -2357,6 +2558,7 @@ const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
   }
 
   const fileCount = jobs.reduce((sum, job) => sum + job.totalFiles, 0);
+  const isScanning = jobs.some((job) => job.scanStatus !== 'complete');
   const nextState = addActivity(
     applyVaultSyncStatus(
       {
@@ -2370,7 +2572,7 @@ const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
     ),
     'upload',
     jobs.length === 1 ? jobs[0].rootName : `${jobs.length} folders`,
-    `${fileCount} files queued`
+    isScanning ? 'Scanning files' : `${fileCount} files queued`
   );
 
   return { state: writeState(nextState), jobs };
@@ -2520,11 +2722,43 @@ const processUploadJob = async (jobId) => {
     }
 
     const pendingFiles = job.files.filter((item) => item.status !== 'done');
-    if (pendingFiles.length === 0) {
-      return finishSyncJob(jobId);
+    let runnableFiles = pendingFiles;
+    if (runnableFiles.length === 0) {
+      if (job.scanStatus !== 'complete') {
+        scanSyncJobBatch(jobId);
+      }
+
+      const refreshed = ensureState().syncJobs.find((item) => item.id === jobId);
+      if (!refreshed) {
+        return ensureState();
+      }
+
+      const queuedBatch = readQueuedSyncFiles(refreshed, syncUploadConcurrency);
+      if (queuedBatch.files.length > 0) {
+        updateSyncJob(jobId, (current) => ({
+          ...current,
+          queueCursor: queuedBatch.nextCursor,
+          files: queuedBatch.files,
+          status: 'running',
+          lastError: '',
+          nextAttemptAt: '',
+        }));
+        continue;
+      }
+
+      if (refreshed.scanStatus === 'complete') {
+        return finishSyncJob(jobId);
+      }
+
+      return updateSyncJob(jobId, (current) => ({
+        ...current,
+        status: 'queued',
+        lastError: 'Scanning files',
+        nextAttemptAt: new Date(Date.now() + 1000).toISOString(),
+      }));
     }
 
-    const batch = pendingFiles.slice(0, syncUploadConcurrency);
+    const batch = runnableFiles.slice(0, syncUploadConcurrency);
     const batchPaths = new Set(batch.map((file) => file.relativePath));
     updateSyncJob(jobId, (current) => ({
       ...current,

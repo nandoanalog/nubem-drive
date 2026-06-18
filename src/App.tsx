@@ -279,6 +279,14 @@ function filesForVaultPath(jobs: SyncJob[], relativePath: string, type: RemoteEn
   )
 }
 
+function syncJobForVaultPath(jobs: SyncJob[], relativePath: string) {
+  const path = normalizeVaultPath(relativePath)
+  return jobs.find((job) => {
+    const rootName = normalizeVaultPath(job.rootName)
+    return path === rootName || path.startsWith(`${rootName}/`)
+  })
+}
+
 function progressForVaultPath(
   jobs: SyncJob[],
   relativePath: string,
@@ -286,7 +294,23 @@ function progressForVaultPath(
   hasRemoteEntry: boolean
 ): RemoteRowProgress {
   const files = filesForVaultPath(jobs, relativePath, type)
+  const job = syncJobForVaultPath(jobs, relativePath)
   if (files.length === 0) {
+    if (job && job.status !== 'complete') {
+      const totalFiles = Math.max(job.totalFiles || 0, 0)
+      const completedFiles = Math.max(job.completedFiles || 0, 0)
+      const percent = totalFiles > 0 ? Math.round((completedFiles / totalFiles) * 100) : 0
+      const isScanning = job.scanStatus !== 'complete'
+      return {
+        detail: isScanning
+          ? `${totalFiles.toLocaleString()} files found`
+          : `${completedFiles.toLocaleString()}/${totalFiles.toLocaleString()} files`,
+        label: isScanning ? 'Scanning' : job.status === 'running' ? 'Uploading' : 'Queued',
+        percent,
+        status: job.status === 'running' ? 'uploading' : 'queued',
+      }
+    }
+
     return {
       detail: hasRemoteEntry ? 'Stored in vault' : 'Waiting to upload',
       label: hasRemoteEntry ? 'In Nubem' : 'Queued',
@@ -371,6 +395,16 @@ function virtualRowsForListing(listing: RemoteListing | null, jobs: SyncJob[], e
       if (!jobIdsByPath.has(childPath)) {
         jobIdsByPath.set(childPath, job.id)
       }
+    }
+  }
+
+  if (!normalizeVaultPath(currentPath)) {
+    for (const job of jobs) {
+      if (job.status === 'complete') continue
+      const rootPath = normalizeVaultPath(job.rootName)
+      if (!rootPath || existingPaths.has(rootPath) || groups.has(rootPath)) continue
+      groups.set(rootPath, [])
+      jobIdsByPath.set(rootPath, job.id)
     }
   }
 
@@ -967,6 +1001,7 @@ function RemoteBrowser({
       ...entry,
       localPath: localPathForVaultPath(jobs, entry.relativePath, entry.type),
       progress: progressForVaultPath(jobs, entry.relativePath, entry.type, true),
+      syncJobId: syncJobForVaultPath(jobs, entry.relativePath)?.id,
     })),
     ...virtualRowsForListing(listing, jobs, existingPaths),
   ].sort((left, right) => {
@@ -1054,7 +1089,7 @@ function RemoteBrowser({
         {rows.map((entry) => {
           const canUseRemote = !entry.virtual
           const canReveal = Boolean(entry.localPath)
-          const canCancelUpload = Boolean(entry.virtual && entry.syncJobId)
+          const canCancelUpload = Boolean(entry.syncJobId && entry.progress.status !== 'synced')
           return (
           <div
             className={`remote-entry ${entry.virtual ? 'virtual' : ''}`}
