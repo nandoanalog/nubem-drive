@@ -58,6 +58,9 @@ const defaultRelayTimeoutMs = 20 * 1000;
 const relayChunkReadTimeoutMs = 90 * 1000;
 const relayChunkWriteTimeoutMs = 5 * 60 * 1000;
 const relayResultTimeoutMs = 45 * 1000;
+const minStorageReceiveWaitMs = 15 * 60 * 1000;
+const storageReceiveWaitPerGbMs = 30 * 60 * 1000;
+const maxStorageReceiveWaitMs = 6 * 60 * 60 * 1000;
 const syncUploadConcurrency = Math.max(
   1,
   Math.min(8, Number.parseInt(process.env.NUBEM_SYNC_CONCURRENCY || '4', 10) || 4)
@@ -670,6 +673,11 @@ const formatBytes = (bytes) => {
   }
 
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+};
+
+const storageReceiveWaitTimeout = (bytes) => {
+  const gb = Math.max(1, Math.ceil((Number(bytes) || 0) / (1024 * 1024 * 1024)));
+  return Math.min(maxStorageReceiveWaitMs, minStorageReceiveWaitMs + gb * storageReceiveWaitPerGbMs);
 };
 
 const onlineClientNamesFromPayload = (payload, currentDeviceId) => {
@@ -1653,15 +1661,31 @@ const receiveFileFromRelay = async (vaultFolderId, request) => {
   const tmpTarget = `${target}.nubem-part-${request.id}`;
 
   const stream = fs.createWriteStream(tmpTarget);
+  let completed = false;
+  let receiveError = null;
   try {
     for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
       const chunk = await downloadRelayChunk(vaultFolderId, request.id, index);
       stream.write(Buffer.from(chunk.data, 'base64'));
     }
+    completed = true;
+  } catch (error) {
+    receiveError = error;
+    throw error;
   } finally {
-    await new Promise((resolve, reject) => {
-      stream.end((error) => (error ? reject(error) : resolve()));
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        stream.end((error) => (error ? reject(error) : resolve()));
+      });
+    } catch (error) {
+      if (!receiveError) {
+        throw error;
+      }
+    }
+
+    if (!completed) {
+      fs.rmSync(tmpTarget, { force: true });
+    }
   }
 
   fs.renameSync(tmpTarget, target);
@@ -1989,6 +2013,7 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, 
   const buffer = Buffer.alloc(chunkSize);
   let index = 0;
   let offset = 0;
+  let uploadReady = false;
 
   try {
     file = fs.openSync(sourceFile, 'r');
@@ -2008,11 +2033,12 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, 
     }
 
     await markUploadReady(vaultFolderId, requestId);
+    uploadReady = true;
     onProgress(stat.size, stat.size);
-    return await waitForVaultRequest(vaultFolderId, requestId, 15 * 60 * 1000);
+    return await waitForVaultRequest(vaultFolderId, requestId, storageReceiveWaitTimeout(stat.size));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Upload failed';
-    if (requestId) {
+    if (requestId && !uploadReady) {
       await failUploadRequest(vaultFolderId, requestId, message).catch(() => undefined);
     }
 

@@ -8,7 +8,7 @@ const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const stateFile = path.join(dataDir, 'state.json');
 const pairCodeTtlMs = 5 * 60 * 1000;
 const onlineWindowMs = 35 * 1000;
-const requestTtlMs = 60 * 60 * 1000;
+const requestTtlMs = 24 * 60 * 60 * 1000;
 const uploadStallMs = 10 * 60 * 1000;
 const shareTtlMs = 24 * 60 * 60 * 1000;
 const shareMaxDownloads = 3;
@@ -131,6 +131,25 @@ const ensurePairShape = (pair) => {
   pair.requests = pair.requests && typeof pair.requests === 'object' ? pair.requests : {};
   pair.folders = cleanFolders(pair.folders);
   return pair;
+};
+
+const cancelDuplicateUploads = (pair, nextRequest) => {
+  if (nextRequest.type !== 'upload') return;
+
+  for (const request of Object.values(pair.requests || {})) {
+    if (
+      request.id !== nextRequest.id &&
+      request.type === 'upload' &&
+      request.requesterId === nextRequest.requesterId &&
+      request.relativePath === nextRequest.relativePath &&
+      ['uploading', 'pending'].includes(request.status)
+    ) {
+      request.status = 'error';
+      request.error = 'Replaced by a newer upload';
+      request.updatedAt = now();
+      fs.rmSync(chunkDir(request.id), { recursive: true, force: true });
+    }
+  }
 };
 
 const prunePairs = (state) => {
@@ -884,6 +903,7 @@ const handlers = {
     };
 
     pair.requests = pair.requests || {};
+    cancelDuplicateUploads(pair, request);
     pair.requests[requestId] = request;
     writeState(prunePairs(state));
 
@@ -948,6 +968,10 @@ const handlers = {
     const request = pair.requests?.[body.requestId];
     if (!request || request.type !== 'upload') {
       return { status: 404, payload: { ok: false, error: 'Request expired' } };
+    }
+
+    if (request.status !== 'uploading') {
+      return { status: 409, payload: { ok: false, error: 'Upload is no longer active' } };
     }
 
     if (request.requesterId !== tokenDeviceId(pair, body.token)) {
@@ -1079,6 +1103,10 @@ const handlers = {
 
       if (!canWriteDownloadChunk && !canWriteUploadChunk) {
         return { status: 401, payload: { ok: false, error: 'Storage token required' } };
+      }
+
+      if (request.type === 'upload' && request.status !== 'uploading') {
+        return { status: 409, payload: { ok: false, error: 'Upload is no longer active' } };
       }
 
       fs.mkdirSync(chunkDir(request.id), { recursive: true });

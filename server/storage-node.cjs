@@ -657,16 +657,32 @@ const receiveFileFromRelay = async (state, folder, request) => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmpTarget = `${target}.nubem-part-${request.id}`;
   const stream = fs.createWriteStream(tmpTarget);
+  let completed = false;
+  let receiveError = null;
 
   try {
     for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
       const chunk = await downloadRelayChunk(folder, request.id, index);
       stream.write(Buffer.from(chunk.data, 'base64'));
     }
+    completed = true;
+  } catch (error) {
+    receiveError = error;
+    throw error;
   } finally {
-    await new Promise((resolve, reject) => {
-      stream.end((error) => (error ? reject(error) : resolve()));
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        stream.end((error) => (error ? reject(error) : resolve()));
+      });
+    } catch (error) {
+      if (!receiveError) {
+        throw error;
+      }
+    }
+
+    if (!completed) {
+      fs.rmSync(tmpTarget, { force: true });
+    }
   }
 
   fs.renameSync(tmpTarget, target);
