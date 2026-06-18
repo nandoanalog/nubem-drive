@@ -142,7 +142,7 @@ const cancelDuplicateUploads = (pair, nextRequest) => {
       request.type === 'upload' &&
       request.requesterId === nextRequest.requesterId &&
       request.relativePath === nextRequest.relativePath &&
-      ['uploading', 'pending'].includes(request.status)
+      request.status === 'uploading'
     ) {
       request.status = 'error';
       request.error = 'Replaced by a newer upload';
@@ -1010,6 +1010,10 @@ const handlers = {
 
     if (request.requesterId !== tokenDeviceId(pair, body.token)) {
       return { status: 403, payload: { ok: false, error: 'Not your request' } };
+    }
+
+    if (request.status !== 'uploading') {
+      return { ok: true, ignored: true };
     }
 
     request.status = 'error';
