@@ -1997,6 +1997,43 @@ const removeDeletedPathFromSyncJobs = (state, vaultFolderId, deleteResult) => {
   return changed ? applyVaultSyncStatus({ ...state, syncJobs }, vaultFolderId) : state;
 };
 
+const cancelSyncJob = async (jobId) => {
+  const state = ensureState();
+  const job = state.syncJobs.find((item) => item.id === jobId);
+  if (!job) {
+    return state;
+  }
+
+  const result = await dialog.showMessageBox(mainWindow || createWindow(), {
+    type: 'warning',
+    buttons: ['Cancel upload', 'Keep uploading'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Cancel upload',
+    message: `Cancel upload of "${job.rootName}"?`,
+    detail: 'Files already stored in the vault stay there. Pending files will not be uploaded.',
+  });
+
+  if (result.response !== 0) {
+    return ensureState();
+  }
+
+  const nextState = addActivity(
+    applyVaultSyncStatus(
+      {
+        ...state,
+        syncJobs: state.syncJobs.filter((item) => item.id !== jobId),
+      },
+      job.vaultFolderId
+    ),
+    'remove',
+    job.rootName,
+    'Upload canceled'
+  );
+
+  return writeState(nextState);
+};
+
 const deleteVaultRelativePath = async (folderId, relativePath = '', timeoutMs = 15 * 60 * 1000) => {
   const safeRelativePath = validateRelativePath(relativePath).split(path.sep).join('/');
   if (!safeRelativePath) {
@@ -3472,6 +3509,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('remote:download', (_event, folderId, relativePath) => downloadRemoteFile(folderId, relativePath));
   ipcMain.handle('remote:delete', (_event, folderId, relativePath) => deleteRemoteEntry(folderId, relativePath));
   ipcMain.handle('remote:share', (_event, folderId, relativePath, type, name) => createShareLink(folderId, relativePath, type, name));
+  ipcMain.handle('sync:cancel-job', (_event, jobId) => cancelSyncJob(jobId));
   ipcMain.handle('clipboard:write-text', (_event, text) => {
     clipboard.writeText(String(text || ''));
     return { ok: true };

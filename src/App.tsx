@@ -47,6 +47,7 @@ type RemoteRowProgress = {
 type RemoteBrowserRow = RemoteEntry & {
   localPath?: string
   progress: RemoteRowProgress
+  syncJobId?: string
   virtual?: boolean
 }
 
@@ -359,6 +360,7 @@ function localPathForVaultPath(jobs: SyncJob[], relativePath: string, type: Remo
 function virtualRowsForListing(listing: RemoteListing | null, jobs: SyncJob[], existingPaths: Set<string>) {
   const currentPath = listing?.path || ''
   const groups = new Map<string, Array<SyncJob['files'][number]>>()
+  const jobIdsByPath = new Map<string, string>()
 
   for (const job of jobs) {
     for (const file of job.files) {
@@ -366,6 +368,9 @@ function virtualRowsForListing(listing: RemoteListing | null, jobs: SyncJob[], e
       const childPath = childPathForListing(currentPath, file.relativePath)
       if (!childPath || existingPaths.has(childPath)) continue
       groups.set(childPath, [...(groups.get(childPath) || []), file])
+      if (!jobIdsByPath.has(childPath)) {
+        jobIdsByPath.set(childPath, job.id)
+      }
     }
   }
 
@@ -385,6 +390,7 @@ function virtualRowsForListing(listing: RemoteListing | null, jobs: SyncJob[], e
       modifiedAt: modifiedAt ? new Date(modifiedAt).toISOString() : '',
       localPath: localPathForVaultPath(jobs, relativePath, isFile ? 'file' : 'directory'),
       progress: progressForVaultPath(jobs, relativePath, isFile ? 'file' : 'directory', false),
+      syncJobId: jobIdsByPath.get(relativePath),
       virtual: true,
     } satisfies RemoteBrowserRow
   })
@@ -673,6 +679,23 @@ function App() {
     }
   }
 
+  async function cancelSyncJob(jobId: string) {
+    if (!api || !selectedFolder) return
+    setRemoteBusy(true)
+    setRemoteError('')
+    setRemoteNotice('')
+    try {
+      const nextState = await api.cancelSyncJob(jobId)
+      setState(nextState)
+      setRemoteNotice('Upload canceled')
+      setRemoteListing(await api.browseRemoteFolder(selectedFolder.id, remoteListing?.path || ''))
+    } catch (error) {
+      setRemoteError(error instanceof Error ? error.message : 'Could not cancel upload')
+    } finally {
+      setRemoteBusy(false)
+    }
+  }
+
   async function shareRemoteEntry(entry: RemoteEntry) {
     if (!api || !selectedFolder) return
     setShareDialog({ busy: true, copied: false, entry, error: '', share: null })
@@ -823,6 +846,7 @@ function App() {
                 onDownload={downloadRemoteEntry}
                 onOpen={browseRemotePath}
                 onReveal={revealLocalPath}
+                onCancelSyncJob={cancelSyncJob}
                 onShare={shareRemoteEntry}
               />
             ) : (
@@ -918,6 +942,7 @@ function RemoteBrowser({
   onDownload,
   onOpen,
   onReveal,
+  onCancelSyncJob,
   onShare,
 }: {
   busy: boolean
@@ -929,6 +954,7 @@ function RemoteBrowser({
   onDownload: (entry: RemoteEntry) => void
   onOpen: (relativePath: string) => void
   onReveal: (localPath: string) => void
+  onCancelSyncJob: (jobId: string) => void
   onShare: (entry: RemoteEntry) => void
 }) {
   const [sortKey, setSortKey] = useState<RemoteSortKey>('name')
@@ -1028,6 +1054,7 @@ function RemoteBrowser({
         {rows.map((entry) => {
           const canUseRemote = !entry.virtual
           const canReveal = Boolean(entry.localPath)
+          const canCancelUpload = Boolean(entry.virtual && entry.syncJobId)
           return (
           <div
             className={`remote-entry ${entry.virtual ? 'virtual' : ''}`}
@@ -1082,15 +1109,27 @@ function RemoteBrowser({
                   <Download size={16} />
                 </button>
               ) : null}
-              <button
-                className="danger-action"
-                disabled={busy || !canUseRemote}
-                onClick={() => onDelete(entry)}
-                title="Delete from vault"
-                aria-label={`Delete ${entry.name} from vault`}
-              >
-                <Trash2 size={16} />
-              </button>
+              {canCancelUpload ? (
+                <button
+                  className="danger-action"
+                  disabled={busy}
+                  onClick={() => onCancelSyncJob(entry.syncJobId || '')}
+                  title="Cancel upload"
+                  aria-label={`Cancel upload of ${entry.name}`}
+                >
+                  <X size={16} />
+                </button>
+              ) : (
+                <button
+                  className="danger-action"
+                  disabled={busy || !canUseRemote}
+                  onClick={() => onDelete(entry)}
+                  title="Delete from vault"
+                  aria-label={`Delete ${entry.name} from vault`}
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
             </span>
           </div>
         )})}

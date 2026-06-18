@@ -196,6 +196,7 @@ export type NubemDriveApi = {
   downloadRemoteFile: (folderId: string, relativePath: string) => Promise<RemoteDownloadResult>
   deleteRemoteEntry: (folderId: string, relativePath: string) => Promise<RemoteDeleteResult>
   createShareLink: (folderId: string, relativePath: string, type: RemoteEntry['type'], name: string) => Promise<ShareLinkResult>
+  cancelSyncJob: (jobId: string) => Promise<AppState>
   copyText: (text: string) => Promise<{ ok: boolean }>
   checkForUpdates: () => Promise<AppState>
   downloadUpdate: () => Promise<AppState>
