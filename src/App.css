@@ -58,7 +58,6 @@ button:disabled {
 }
 
 .brand-mark,
-.folder-glyph,
 .small-folder-icon {
   display: grid;
   flex: 0 0 auto;
@@ -109,7 +108,6 @@ button:disabled {
 
 .icon-button,
 .primary-button,
-.mode-option,
 .row-action {
   display: inline-flex;
   align-items: center;
@@ -125,36 +123,15 @@ button:disabled {
 }
 
 .icon-button:hover,
-.mode-option:hover,
 .row-action:hover {
   background: #ece7db;
 }
 
-.browser-toolbar,
-.inspector-head {
+.browser-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.wide-progress {
-  position: relative;
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #ebe5d9;
-}
-
-.wide-progress span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: #0f766e;
-}
-
-.wide-progress span {
-  background: #2f6fbe;
 }
 
 .workspace {
@@ -208,8 +185,7 @@ button:disabled {
   background: transparent;
 }
 
-.icon-button,
-.mode-option {
+.icon-button {
   border: 1px solid #d9d3c8;
   color: #313836;
   background: #fffdf8;
@@ -421,14 +397,13 @@ button:disabled {
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(560px, 1fr) 268px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
   flex: 1;
 }
 
-.folder-browser,
-.inspector {
+.folder-browser {
   min-width: 0;
   border: 1px solid #ddd6ca;
   border-radius: 8px;
@@ -560,8 +535,7 @@ button:disabled {
 .status-pill,
 .size-cell > span,
 .server-vault-clients span,
-.server-vault-used,
-.meta-strip span {
+.server-vault-used {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -657,240 +631,10 @@ button:disabled {
   background: #fffdf8;
 }
 
-.inspector {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 14px;
-  overflow: auto;
-}
-
-.inspector-head {
-  align-items: flex-start;
-}
-
-.inspector h2 {
-  max-width: 158px;
-  margin: 8px 0 0;
-  overflow: hidden;
-  font-size: 20px;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.vault-name-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-
-.vault-name-form input {
-  min-width: 0;
-  height: 40px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: #202623;
-  background: transparent;
-  font-size: 20px;
-  font-weight: 800;
-}
-
-.vault-name-form input:focus {
-  border-color: #b9ded4;
-  background: #fffdf8;
-  outline: none;
-}
-
-.vault-name-form button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid #e0d9cf;
-  border-radius: 8px;
-  color: #4b5550;
-  background: #faf7ef;
-  cursor: pointer;
-}
-
-.vault-name-form button:not(:disabled):hover {
-  border-color: #b9ded4;
-  color: #0f5e57;
-  background: #e5f5ef;
-}
-
-.folder-glyph {
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  background: #2f6fbe;
-}
-
-.quick-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.quick-actions button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid #e0d9cf;
-  border-radius: 8px;
-  color: #4b5550;
-  background: #faf7ef;
-  cursor: pointer;
-}
-
-.quick-actions button.danger-action {
-  border-color: #efc0b7;
-  color: #a43b2d;
-  background: #fff1ed;
-}
-
-.quick-actions button.danger-action:hover {
-  background: #ffe5de;
-}
-
-.full-width {
-  width: 100%;
-}
-
 .action-state {
   display: grid;
   flex: 1;
   place-items: center;
-}
-
-.meta-strip {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.meta-strip span {
-  min-height: 38px;
-  padding: 10px;
-  border: 1px solid #e0d9cf;
-  border-radius: 8px;
-  color: #2f3532;
-  background: #faf7ef;
-  font-size: 13px;
-  font-weight: 750;
-}
-
-.sync-progress-panel {
-  display: grid;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid #ded8ce;
-  border-radius: 8px;
-  background: #faf7ef;
-}
-
-.sync-progress-head,
-.sync-job-title,
-.sync-job-detail {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.sync-progress-head {
-  justify-content: flex-start;
-  color: #2d3834;
-}
-
-.sync-progress-head strong,
-.sync-job-title strong,
-.sync-job-title span,
-.sync-job-detail span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sync-job {
-  display: grid;
-  gap: 7px;
-  min-width: 0;
-}
-
-.sync-job-title strong {
-  color: #242927;
-  font-size: 13px;
-}
-
-.sync-job-title span,
-.sync-job-detail {
-  color: #68716d;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.sync-job-detail span:last-child {
-  flex: 1;
-  text-align: right;
-}
-
-.sync-job-bar {
-  height: 7px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e3ded5;
-}
-
-.sync-job-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #2f6fbe;
-}
-
-.sync-job.complete .sync-job-bar span {
-  background: #0f766e;
-}
-
-.sync-job.error .sync-job-bar span {
-  background: #b84636;
-}
-
-.control-section {
-  padding-top: 12px;
-  border-top: 1px solid #ece6da;
-}
-
-.mode-stack {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.mode-option {
-  justify-content: center;
-  width: 100%;
-  height: 38px;
-  padding: 0 10px;
-  border: 1px solid #ddd6ca;
-  color: #404744;
-  background: #fffdf8;
-}
-
-.mode-option.selected {
-  border-color: #a8d6c9;
-  color: #0f5e57;
-  background: #eaf7f2;
 }
 
 .remote-browser {
@@ -992,7 +736,7 @@ button:disabled {
 .remote-table-head,
 .remote-entry {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 88px 96px 124px 76px;
+  grid-template-columns: minmax(260px, 1fr) 172px 106px 132px 156px;
   align-items: center;
   gap: 12px;
   padding: 0 12px;
@@ -1034,10 +778,14 @@ button:disabled {
 }
 
 .remote-entry {
-  min-height: 48px;
+  min-height: 58px;
   border-bottom: 1px solid #eee8dd;
   color: #252b28;
   background: #fffdf8;
+}
+
+.remote-entry.virtual {
+  background: #fbfaf6;
 }
 
 .remote-entry:hover {
@@ -1071,8 +819,19 @@ button:disabled {
   background: #e7f0ff;
 }
 
+.remote-entry.virtual .remote-entry-icon {
+  color: #8a5a12;
+  background: #fff5d7;
+}
+
+.remote-name-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
 .remote-name strong,
-.remote-kind,
+.remote-name small,
 .remote-size,
 .remote-modified {
   min-width: 0;
@@ -1085,12 +844,65 @@ button:disabled {
   font-size: 13px;
 }
 
-.remote-kind,
+.remote-name small,
 .remote-size,
 .remote-modified {
   color: #68716d;
   font-size: 12px;
   font-weight: 750;
+}
+
+.remote-progress {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.remote-progress small {
+  min-width: 0;
+  overflow: hidden;
+  color: #54605b;
+  font-size: 11px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-progress-bar {
+  display: block;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e3ded5;
+}
+
+.remote-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #0f766e;
+}
+
+.remote-progress.uploading .remote-progress-bar span,
+.remote-progress.queued .remote-progress-bar span {
+  background: #2f6fbe;
+}
+
+.remote-progress.error .remote-progress-bar span {
+  background: #b84636;
+}
+
+.remote-progress.synced small {
+  color: #0f6f64;
+}
+
+.remote-progress.uploading small,
+.remote-progress.queued small {
+  color: #2f6fbe;
+}
+
+.remote-progress.error small {
+  color: #b84636;
 }
 
 .remote-actions {
@@ -1141,6 +953,111 @@ button:disabled {
   background: #faf7ef;
   font-size: 13px;
   font-weight: 750;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(23, 26, 29, 0.36);
+}
+
+.share-dialog {
+  display: grid;
+  width: min(520px, 100%);
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #d8d1c6;
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 20px 60px rgba(23, 26, 29, 0.22);
+}
+
+.share-dialog header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.share-dialog header div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.share-dialog strong,
+.share-dialog span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-dialog strong {
+  color: #202623;
+  font-size: 15px;
+}
+
+.share-dialog span {
+  color: #68716d;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.share-dialog header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #e0d9cf;
+  border-radius: 8px;
+  color: #4b5550;
+  background: #faf7ef;
+  cursor: pointer;
+}
+
+.share-dialog header > button:hover {
+  background: #ece7db;
+}
+
+.share-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+}
+
+.share-url-row input {
+  min-width: 0;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid #d9d3c8;
+  border-radius: 8px;
+  color: #171a1d;
+  background: #faf7ef;
+}
+
+.share-loading,
+.share-error {
+  min-height: 38px;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.share-loading {
+  color: #68716d;
+  background: #faf7ef;
+}
+
+.share-error {
+  color: #a43b2d;
+  background: #fff1ed;
 }
 
 .version-chip {
@@ -1258,10 +1175,6 @@ button:disabled {
   margin-bottom: 10px;
 }
 
-.progress-line strong {
-  font-size: 14px;
-}
-
 button:focus-visible,
 input:focus-visible {
   outline: 3px solid rgba(47, 111, 190, 0.32);
@@ -1271,10 +1184,6 @@ input:focus-visible {
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 82px minmax(640px, 1fr);
-  }
-
-  .content-grid {
-    grid-template-columns: minmax(460px, 1fr) 260px;
   }
 }
 
@@ -1343,9 +1252,9 @@ input:focus-visible {
   }
 
   .remote-entry {
-    grid-template-columns: minmax(0, 1fr) 42px;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 7px 10px;
-    min-height: 76px;
+    min-height: 96px;
     padding: 10px 12px;
   }
 
@@ -1353,7 +1262,7 @@ input:focus-visible {
     grid-column: 1 / 2;
   }
 
-  .remote-kind,
+  .remote-progress,
   .remote-size,
   .remote-modified {
     grid-column: 1 / 2;
@@ -1362,7 +1271,12 @@ input:focus-visible {
 
   .remote-actions {
     grid-column: 2 / 3;
-    grid-row: 1 / 4;
+    grid-row: 1 / 5;
     align-self: center;
+    flex-direction: column;
+  }
+
+  .share-url-row {
+    grid-template-columns: 1fr;
   }
 }

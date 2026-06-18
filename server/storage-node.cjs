@@ -7,7 +7,11 @@ const path = require('node:path');
 
 const defaultRelayUrl = 'https://drive.nubem.org';
 const pollIntervalMs = Number(process.env.NUBEM_STORAGE_POLL_MS || 5000);
-const chunkSize = 256 * 1024;
+const chunkSize = 4 * 1024 * 1024;
+const defaultRelayTimeoutMs = 20 * 1000;
+const relayChunkReadTimeoutMs = 90 * 1000;
+const relayChunkWriteTimeoutMs = 5 * 60 * 1000;
+const relayResultTimeoutMs = 45 * 1000;
 const relayRequestLockTtlMs = 10 * 60 * 1000;
 const deleteRequestPrefix = '.nubem-command/delete/';
 const processingRelayRequests = new Set();
@@ -233,9 +237,23 @@ const localRelayDevice = (state) => ({
   role: 'storage',
 });
 
-const relayRequest = async (relayUrl, endpoint, body) => {
+const relayRequestTimeout = (endpoint, body = {}) => {
+  if (endpoint === '/api/drive/requests/chunk') {
+    return Object.prototype.hasOwnProperty.call(body || {}, 'data')
+      ? relayChunkWriteTimeoutMs
+      : relayChunkReadTimeoutMs;
+  }
+
+  if (endpoint === '/api/drive/requests/result') {
+    return relayResultTimeoutMs;
+  }
+
+  return defaultRelayTimeoutMs;
+};
+
+const relayRequest = async (relayUrl, endpoint, body, timeoutMs = relayRequestTimeout(endpoint, body)) => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${normalizeRelayUrl(relayUrl)}${endpoint}`, {

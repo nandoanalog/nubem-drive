@@ -10,10 +10,13 @@ const pairCodeTtlMs = 5 * 60 * 1000;
 const onlineWindowMs = 35 * 1000;
 const requestTtlMs = 60 * 60 * 1000;
 const uploadStallMs = 10 * 60 * 1000;
+const shareTtlMs = 24 * 60 * 60 * 1000;
+const shareMaxDownloads = 3;
+const publicRequestTimeoutMs = 15 * 60 * 1000;
 const joinRateWindowMs = 10 * 60 * 1000;
 const joinRateLimit = 24;
 const defaultBodyLimitBytes = 512 * 1024;
-const chunkBodyLimitBytes = 2 * 1024 * 1024;
+const chunkBodyLimitBytes = 8 * 1024 * 1024;
 const pairCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const now = () => new Date().toISOString();
@@ -24,15 +27,18 @@ const readState = () => {
     return {
       pairs: state.pairs || {},
       joinAttempts: state.joinAttempts || {},
+      shares: state.shares || {},
     };
   } catch {
-    return { pairs: {}, joinAttempts: {} };
+    return { pairs: {}, joinAttempts: {}, shares: {} };
   }
 };
 
 const writeState = (state) => {
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  const temp = `${stateFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(state, null, 2));
+  fs.renameSync(temp, stateFile);
 };
 
 const send = (response, status, payload) => {
@@ -43,6 +49,33 @@ const send = (response, status, payload) => {
     'content-type': 'application/json',
   });
   response.end(JSON.stringify(payload));
+};
+
+const sendHtml = (response, status, html) => {
+  response.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  response.end(html);
+};
+
+const sendPublicMessage = (response, status, title, detail = '') => {
+  sendHtml(response, status, `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f1ea;color:#171a1d}
+    main{display:grid;min-height:100vh;place-items:center;padding:24px}
+    section{width:min(520px,100%);border:1px solid #ded8ce;border-radius:8px;background:#fffdf8;padding:22px}
+    h1{margin:0 0 8px;font-size:20px;letter-spacing:0}
+    p{margin:0;color:#68716d;font-weight:700;line-height:1.45}
+  </style>
+</head>
+<body><main><section><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p></section></main></body>
+</html>`);
 };
 
 const readBody = (request, limitBytes = defaultBodyLimitBytes) =>
@@ -105,6 +138,8 @@ const prunePairs = (state) => {
   const uploadCutoff = Date.now() - uploadStallMs;
   const attemptCutoff = Date.now() - joinRateWindowMs;
 
+  state.shares = state.shares && typeof state.shares === 'object' ? state.shares : {};
+
   for (const pair of Object.values(state.pairs || {})) {
     ensurePairShape(pair);
 
@@ -128,6 +163,21 @@ const prunePairs = (state) => {
   for (const [key, attempt] of Object.entries(state.joinAttempts || {})) {
     if (new Date(attempt.firstAt || 0).getTime() < attemptCutoff) {
       delete state.joinAttempts[key];
+    }
+  }
+
+  for (const [token, share] of Object.entries(state.shares || {})) {
+    const expiresAt = new Date(share.expiresAt || 0).getTime();
+    const maxDownloads = Number(share.maxDownloads || shareMaxDownloads);
+    const downloadCount = Number(share.downloadCount || 0);
+    if (
+      share.revokedAt ||
+      !state.pairs?.[share.pairId] ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= Date.now() ||
+      downloadCount >= maxDownloads
+    ) {
+      delete state.shares[token];
     }
   }
 
@@ -223,6 +273,45 @@ const pairPayload = (pair, extra = {}) => ({
   ...extra,
 });
 
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const normalizeRemotePath = (value = '') => {
+  const raw = String(value || '').replace(/\\/g, '/');
+  const parts = raw.split('/').filter(Boolean);
+
+  if (
+    raw.startsWith('/') ||
+    /^[A-Za-z]:/.test(raw) ||
+    raw.includes('\0') ||
+    parts.some((part) => part === '..')
+  ) {
+    throw new Error('Invalid path');
+  }
+
+  return parts.join('/');
+};
+
+const joinRemotePath = (...parts) =>
+  parts
+    .map((part) => normalizeRemotePath(part))
+    .filter(Boolean)
+    .join('/');
+
+const stripPathPrefix = (prefix, relativePath) => {
+  const cleanPrefix = normalizeRemotePath(prefix);
+  const cleanPath = normalizeRemotePath(relativePath);
+  if (!cleanPrefix) return cleanPath;
+  if (cleanPath === cleanPrefix) return '';
+  return cleanPath.startsWith(`${cleanPrefix}/`) ? cleanPath.slice(cleanPrefix.length + 1) : cleanPath;
+};
+
 const pairFoldersForToken = (pair, token) => {
   const folders = cleanFolders(pair.folders);
   const deviceId = token ? tokenDeviceId(pair, token) : '';
@@ -255,6 +344,7 @@ const pairClientVaultsForToken = (pair, token) => {
       status: age < onlineWindowMs ? 'online' : 'sleeping',
       lastSeenAt: client.lastSeenAt || '',
     };
+
     const existing = byPrefix.get(remotePathPrefix);
     const existingSeen = new Date(existing?.lastSeenAt || 0).getTime();
     const nextSeen = new Date(vault.lastSeenAt || 0).getTime();
@@ -285,6 +375,270 @@ const tokenRole = (pair, token) => {
   const deviceId = tokenDeviceId(pair, token);
   if (!deviceId) return null;
   return deviceId === pair.storage?.id ? 'storage' : 'client';
+};
+
+const publicBaseUrl = (request) => {
+  const host = String(request.headers['x-forwarded-host'] || request.headers.host || '').split(',')[0].trim();
+  const protoHeader = String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const proto = protoHeader || (host.startsWith('127.') || host.startsWith('localhost') ? 'http' : 'https');
+  return `${proto}://${host || `127.0.0.1:${port}`}`;
+};
+
+const canSharePathForToken = (pair, token, relativePath) => {
+  const role = tokenRole(pair, token);
+  if (role === 'storage') return true;
+  if (role !== 'client') return false;
+
+  const deviceId = tokenDeviceId(pair, token);
+  const client = pair.clients?.[deviceId];
+  if (!client) return false;
+
+  const prefix = normalizeRemotePath(safePathName(client.remotePathPrefix || client.name || 'Client', 'Client'));
+  const cleanPath = normalizeRemotePath(relativePath);
+  return cleanPath === prefix || cleanPath.startsWith(`${prefix}/`);
+};
+
+const publicSharePayload = (share, request) => ({
+  ok: true,
+  token: share.token,
+  url: `${publicBaseUrl(request)}/s/${share.token}`,
+  name: share.name,
+  type: share.type,
+  relativePath: share.relativePath,
+  expiresAt: share.expiresAt,
+  maxDownloads: Number(share.maxDownloads || shareMaxDownloads),
+  downloadCount: Number(share.downloadCount || 0),
+});
+
+const createPublicRequest = (state, share, type, relativePath) => {
+  const requestId = crypto.randomUUID();
+  const pair = ensurePairShape(state.pairs?.[share.pairId]);
+  if (!pair) {
+    throw new Error('Share unavailable');
+  }
+
+  pair.requests = pair.requests || {};
+  pair.requests[requestId] = {
+    id: requestId,
+    type,
+    folderId: share.folderId,
+    relativePath,
+    fileName: '',
+    totalBytes: 0,
+    sizeLabel: '',
+    chunkCount: 0,
+    modifiedAt: '',
+    requesterId: `share:${share.token}`,
+    status: 'pending',
+    createdAt: now(),
+    updatedAt: now(),
+  };
+
+  writeState(prunePairs(state));
+  return requestId;
+};
+
+const waitForPublicRequest = async (pairId, requestId, timeoutMs = publicRequestTimeoutMs) => {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = readState();
+    const pair = ensurePairShape(state.pairs?.[pairId]);
+    const request = pair?.requests?.[requestId];
+
+    if (!request) {
+      throw new Error('Request expired');
+    }
+
+    if (request.status === 'ready') {
+      return { state, pair, request };
+    }
+
+    if (request.status === 'error') {
+      throw new Error(request.error || 'Storage request failed');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+
+  throw new Error('Storage PC did not respond');
+};
+
+const cleanupPublicRequest = (pairId, requestId) => {
+  const state = readState();
+  const pair = ensurePairShape(state.pairs?.[pairId]);
+  if (pair?.requests?.[requestId]) {
+    delete pair.requests[requestId];
+  }
+  fs.rmSync(chunkDir(requestId), { recursive: true, force: true });
+  writeState(prunePairs(state));
+};
+
+const incrementShareDownload = (token) => {
+  const state = readState();
+  const share = state.shares?.[token];
+  if (!share) return;
+
+  share.downloadCount = Number(share.downloadCount || 0) + 1;
+  share.lastDownloadedAt = now();
+  if (share.downloadCount >= Number(share.maxDownloads || shareMaxDownloads)) {
+    share.revokedAt = now();
+  }
+
+  writeState(prunePairs(state));
+};
+
+const shareFromRequest = (token) => {
+  const state = prunePairs(readState());
+  const share = state.shares?.[token];
+  const pair = share ? ensurePairShape(state.pairs?.[share.pairId]) : null;
+
+  if (!share || !pair) {
+    return { error: 'This link is expired or unavailable' };
+  }
+
+  if (Number(share.downloadCount || 0) >= Number(share.maxDownloads || shareMaxDownloads)) {
+    delete state.shares[token];
+    writeState(state);
+    return { error: 'This link has reached its download limit' };
+  }
+
+  return { state, share, pair };
+};
+
+const publicChildPath = (share, childPath = '') => joinRemotePath(share.relativePath, childPath);
+
+const filenameHeader = (fileName) => {
+  const fallback = safePathName(fileName || 'download', 'download').replace(/"/g, '');
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName || fallback)}`;
+};
+
+const sendSharedFile = async (request, response, share, pair, childPath = '') => {
+  const relativePath = share.type === 'file' ? share.relativePath : publicChildPath(share, childPath);
+  const requestId = createPublicRequest(readState(), share, 'download', relativePath);
+
+  try {
+    const startedAt = Date.now();
+    let headersSent = false;
+    let nextChunk = 0;
+
+    while (Date.now() - startedAt < publicRequestTimeoutMs) {
+      const state = readState();
+      const currentPair = ensurePairShape(state.pairs?.[share.pairId]);
+      const currentRequest = currentPair?.requests?.[requestId];
+
+      if (!currentRequest) {
+        throw new Error('Request expired');
+      }
+
+      if (currentRequest.status === 'error') {
+        throw new Error(currentRequest.error || 'Storage request failed');
+      }
+
+      while (fs.existsSync(chunkPath(requestId, nextChunk))) {
+        if (!headersSent) {
+          response.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-disposition': filenameHeader(share.name || 'download'),
+            'cache-control': 'no-store',
+          });
+          headersSent = true;
+        }
+
+        const ready = response.write(Buffer.from(fs.readFileSync(chunkPath(requestId, nextChunk), 'utf8'), 'base64'));
+        nextChunk += 1;
+        if (!ready) {
+          await new Promise((resolve) => response.once('drain', resolve));
+        }
+      }
+
+      if (currentRequest.status === 'ready') {
+        const chunkCount = Number(currentRequest.result?.chunkCount || 0);
+        if (nextChunk >= chunkCount) {
+          if (!headersSent) {
+            response.writeHead(200, {
+              'content-type': 'application/octet-stream',
+              'content-disposition': filenameHeader(currentRequest.result?.fileName || share.name || 'download'),
+              'cache-control': 'no-store',
+            });
+          }
+          incrementShareDownload(share.token);
+          response.end();
+          return;
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    throw new Error('Storage PC did not respond');
+  } catch (error) {
+    if (!response.headersSent) {
+      sendPublicMessage(response, 503, 'File unavailable', error instanceof Error ? error.message : 'Could not download this file');
+    } else {
+      response.destroy(error);
+    }
+  } finally {
+    cleanupPublicRequest(share.pairId, requestId);
+  }
+};
+
+const renderSharedFolder = async (request, response, share, pair, childPath = '') => {
+  const relativePath = publicChildPath(share, childPath);
+  const requestId = createPublicRequest(readState(), share, 'list', relativePath);
+
+  try {
+    const { request: completedRequest } = await waitForPublicRequest(share.pairId, requestId, 120000);
+    const listing = completedRequest.result || { entries: [] };
+    const currentChild = stripPathPrefix(share.relativePath, listing.path || relativePath);
+    const entries = Array.isArray(listing.entries) ? listing.entries : [];
+    const rows = entries.map((entry) => {
+      const entryChild = stripPathPrefix(share.relativePath, entry.relativePath || '');
+      const href = entry.type === 'directory'
+        ? `/s/${share.token}?path=${encodeURIComponent(entryChild)}`
+        : `/s/${share.token}/download?path=${encodeURIComponent(entryChild)}`;
+      const action = entry.type === 'directory' ? 'Open' : 'Download';
+      return `<tr>
+        <td>${escapeHtml(entry.name)}</td>
+        <td>${entry.type === 'directory' ? 'Folder' : 'File'}</td>
+        <td>${escapeHtml(entry.sizeLabel || '-')}</td>
+        <td><a href="${href}">${action}</a></td>
+      </tr>`;
+    }).join('');
+    const upPath = currentChild.split('/').filter(Boolean).slice(0, -1).join('/');
+    const upLink = currentChild ? `<a class="up" href="/s/${share.token}${upPath ? `?path=${encodeURIComponent(upPath)}` : ''}">Up</a>` : '';
+
+    sendHtml(response, 200, `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(share.name)}</title>
+  <style>
+    body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f1ea;color:#171a1d}
+    main{max-width:920px;margin:0 auto;padding:24px}
+    header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}
+    h1{margin:0;font-size:22px;letter-spacing:0}.meta{color:#68716d;font-size:13px;font-weight:750}.up{font-weight:850;color:#0f766e;text-decoration:none}
+    table{width:100%;border-collapse:collapse;border:1px solid #ded8ce;background:#fffdf8;border-radius:8px;overflow:hidden}
+    th,td{padding:12px;border-bottom:1px solid #eee8dd;text-align:left;font-size:14px}th{background:#faf7ef;color:#68716d;font-size:12px;text-transform:uppercase}
+    tr:last-child td{border-bottom:0}a{color:#0f766e;font-weight:850}.empty{display:grid;min-height:96px;place-items:center;border:1px solid #ded8ce;background:#fffdf8;border-radius:8px;color:#68716d;font-weight:750}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>${escapeHtml(share.name)}</h1><div class="meta">${escapeHtml(currentChild || 'Shared folder')} · ${entries.length} items</div></div>
+      ${upLink}
+    </header>
+    ${entries.length === 0 ? '<div class="empty">Empty</div>' : `<table><thead><tr><th>Name</th><th>Kind</th><th>Size</th><th></th></tr></thead><tbody>${rows}</tbody></table>`}
+  </main>
+</body>
+</html>`);
+  } catch (error) {
+    sendPublicMessage(response, 503, 'Folder unavailable', error instanceof Error ? error.message : 'Could not open this folder');
+  } finally {
+    cleanupPublicRequest(share.pairId, requestId);
+  }
 };
 
 const availableStoragePairs = (state) =>
@@ -536,6 +890,53 @@ const handlers = {
     return { ok: true, requestId };
   },
 
+  'POST /api/drive/shares/create': async (body, request) => {
+    const state = prunePairs(readState());
+    const pair = verifyPair(state, body.pairId, body.token);
+
+    if (!pair) {
+      return { status: 401, payload: { ok: false, error: 'Not linked' } };
+    }
+
+    let relativePath;
+    try {
+      relativePath = normalizeRemotePath(body.relativePath);
+    } catch {
+      return { status: 400, payload: { ok: false, error: 'Invalid path' } };
+    }
+
+    if (!relativePath) {
+      return { status: 400, payload: { ok: false, error: 'Select a file or folder' } };
+    }
+
+    if (!canSharePathForToken(pair, body.token, relativePath)) {
+      return { status: 403, payload: { ok: false, error: 'Path is outside your vault' } };
+    }
+
+    const token = crypto.randomBytes(18).toString('base64url');
+    const type = body.type === 'directory' ? 'directory' : 'file';
+    const name = safePathName(body.name || relativePath.split('/').filter(Boolean).slice(-1)[0] || 'Shared item', 'Shared item');
+    const share = {
+      token,
+      pairId: pair.id,
+      folderId: String(body.folderId || '').slice(0, 80),
+      relativePath,
+      name,
+      type,
+      createdAt: now(),
+      expiresAt: new Date(Date.now() + shareTtlMs).toISOString(),
+      maxDownloads: shareMaxDownloads,
+      downloadCount: 0,
+      createdBy: tokenDeviceId(pair, body.token),
+    };
+
+    state.shares = state.shares || {};
+    state.shares[token] = share;
+    writeState(state);
+
+    return { ok: true, share: publicSharePayload(share, request) };
+  },
+
   'POST /api/drive/requests/upload-ready': async (body) => {
     const state = readState();
     const pair = verifyPair(state, body.pairId, body.token);
@@ -701,9 +1102,59 @@ const handlers = {
   },
 };
 
+const handlePublicShareRoute = async (request, response) => {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return false;
+  }
+
+  const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (parts[0] !== 's' || !parts[1] || parts.length > 3) {
+    return false;
+  }
+
+  const token = parts[1];
+  if (!/^[A-Za-z0-9_-]{12,80}$/.test(token)) {
+    sendPublicMessage(response, 404, 'Link not found', 'This share link is invalid.');
+    return true;
+  }
+
+  const current = shareFromRequest(token);
+  if (current.error) {
+    sendPublicMessage(response, 410, 'Link expired', current.error);
+    return true;
+  }
+
+  const childPath = normalizeRemotePath(url.searchParams.get('path') || '');
+  const isDownloadRoute = parts[2] === 'download';
+
+  if (request.method === 'HEAD') {
+    response.writeHead(200, { 'cache-control': 'no-store' });
+    response.end();
+    return true;
+  }
+
+  if (isDownloadRoute || current.share.type === 'file') {
+    await sendSharedFile(request, response, current.share, current.pair, childPath);
+    return true;
+  }
+
+  await renderSharedFolder(request, response, current.share, current.pair, childPath);
+  return true;
+};
+
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') {
     send(response, 204, {});
+    return;
+  }
+
+  try {
+    if (await handlePublicShareRoute(request, response)) {
+      return;
+    }
+  } catch (error) {
+    sendPublicMessage(response, 400, 'Link error', error instanceof Error ? error.message : 'Could not open this link');
     return;
   }
 

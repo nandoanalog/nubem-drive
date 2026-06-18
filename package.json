@@ -1,7 +1,7 @@
 {
   "name": "nubem-drive",
   "private": true,
-  "version": "0.0.49",
+  "version": "0.0.70",
   "description": "Private folder cloud desktop app.",
   "author": "Nando <nando@nubem.org>",
   "homepage": "https://drive.nubem.org",
@@ -41,6 +41,7 @@
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.14",
     "globals": "^15.11.0",
+    "rcedit": "^5.0.2",
     "typescript": "~5.6.2",
     "typescript-eslint": "^8.11.0",
     "vite": "^5.4.10",

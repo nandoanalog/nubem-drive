@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('nubemDrive', {
   browseRemoteFolder: (folderId, relativePath) => ipcRenderer.invoke('remote:browse', folderId, relativePath),
   downloadRemoteFile: (folderId, relativePath) => ipcRenderer.invoke('remote:download', folderId, relativePath),
   deleteRemoteEntry: (folderId, relativePath) => ipcRenderer.invoke('remote:delete', folderId, relativePath),
+  createShareLink: (folderId, relativePath, type, name) => ipcRenderer.invoke('remote:share', folderId, relativePath, type, name),
+  copyText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),
   installUpdate: () => ipcRenderer.invoke('updates:install'),

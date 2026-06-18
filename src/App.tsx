@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Cloud,
+  Copy,
   Download,
   ExternalLink,
   FileText,
@@ -14,21 +15,40 @@ import {
   HardDrive,
   Laptop,
   Pause,
-  Pencil,
   Plus,
   RefreshCcw,
-  Save,
   Search,
+  Share2,
   Trash2,
   UploadCloud,
+  X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, SyncJob } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'retry' | null
 type RemoteSortKey = 'name' | 'modified' | 'size'
 type SortDirection = 'asc' | 'desc'
+type ShareDialogState = {
+  busy: boolean
+  copied: boolean
+  entry: RemoteEntry
+  error: string
+  share: ShareLinkResult | null
+} | null
+type RemoteProgressStatus = 'synced' | 'uploading' | 'queued' | 'error'
+type RemoteRowProgress = {
+  detail: string
+  label: string
+  percent: number
+  status: RemoteProgressStatus
+}
+type RemoteBrowserRow = RemoteEntry & {
+  localPath?: string
+  progress: RemoteRowProgress
+  virtual?: boolean
+}
 
 const defaultRelayHost = 'drive.nubem.org'
 
@@ -218,6 +238,170 @@ function formatTime(value: string) {
   }).format(new Date(value))
 }
 
+function normalizeVaultPath(value = '') {
+  return value.replace(/\\/g, '/').split('/').filter(Boolean).join('/')
+}
+
+function joinVaultPath(...parts: string[]) {
+  return parts.map((part) => normalizeVaultPath(part)).filter(Boolean).join('/')
+}
+
+function baseName(value: string) {
+  const parts = normalizeVaultPath(value).split('/').filter(Boolean)
+  return parts[parts.length - 1] || value
+}
+
+function childPathForListing(currentPath: string, targetPath: string) {
+  const current = normalizeVaultPath(currentPath)
+  const target = normalizeVaultPath(targetPath)
+  if (!target) return ''
+  if (current && target !== current && !target.startsWith(`${current}/`)) return ''
+
+  const remaining = current ? target.slice(current.length).replace(/^\/+/, '') : target
+  const child = remaining.split('/').filter(Boolean)[0]
+  return child ? joinVaultPath(current, child) : ''
+}
+
+function uploadRatio(file: SyncJob['files'][number]) {
+  if (file.status === 'done') return 1
+  if (file.sizeBytes <= 0) return file.uploadedBytes > 0 ? 1 : 0
+  return Math.min(Math.max(file.uploadedBytes / file.sizeBytes, 0), 1)
+}
+
+function filesForVaultPath(jobs: SyncJob[], relativePath: string, type: RemoteEntry['type']) {
+  const path = normalizeVaultPath(relativePath)
+  return jobs.flatMap((job) =>
+    job.files.filter((file) => {
+      const filePath = normalizeVaultPath(file.relativePath)
+      return type === 'directory' ? filePath === path || filePath.startsWith(`${path}/`) : filePath === path
+    })
+  )
+}
+
+function progressForVaultPath(
+  jobs: SyncJob[],
+  relativePath: string,
+  type: RemoteEntry['type'],
+  hasRemoteEntry: boolean
+): RemoteRowProgress {
+  const files = filesForVaultPath(jobs, relativePath, type)
+  if (files.length === 0) {
+    return {
+      detail: hasRemoteEntry ? 'Stored in vault' : 'Waiting to upload',
+      label: hasRemoteEntry ? 'In Nubem' : 'Queued',
+      percent: hasRemoteEntry ? 100 : 0,
+      status: hasRemoteEntry ? 'synced' : 'queued',
+    }
+  }
+
+  const percent = Math.round((files.reduce((sum, file) => sum + uploadRatio(file), 0) / files.length) * 100)
+  const errored = files.find((file) => file.status === 'error')
+  if (errored) {
+    return {
+      detail: errored.error || 'Upload failed',
+      label: 'Error',
+      percent,
+      status: 'error',
+    }
+  }
+
+  if (files.every((file) => file.status === 'done')) {
+    return {
+      detail: files.length === 1 ? 'Stored in vault' : `${files.length}/${files.length} files`,
+      label: 'In Nubem',
+      percent: 100,
+      status: 'synced',
+    }
+  }
+
+  const active = files.find((file) => file.status === 'uploading')
+  const waiting = files.find((file) => file.uploadedBytes >= file.sizeBytes && file.status !== 'done')
+  return {
+    detail: active?.error || waiting?.error || (files.length === 1 ? baseName(files[0].relativePath) : `${percent}% uploaded`),
+    label: active ? 'Uploading' : waiting ? 'Waiting' : 'Queued',
+    percent,
+    status: active || waiting ? 'uploading' : 'queued',
+  }
+}
+
+function localPathSeparator(localPath: string) {
+  return localPath.includes('\\') ? '\\' : '/'
+}
+
+function dropLocalPathSegments(localPath: string, count: number) {
+  if (count <= 0) return localPath
+  const separator = localPathSeparator(localPath)
+  const parts = localPath.split(/[\\/]/)
+  return parts.slice(0, Math.max(1, parts.length - count)).join(separator)
+}
+
+function localPathForVaultPath(jobs: SyncJob[], relativePath: string, type: RemoteEntry['type']) {
+  const path = normalizeVaultPath(relativePath)
+
+  for (const job of jobs) {
+    const rootName = normalizeVaultPath(job.rootName)
+    if (path === rootName) return job.rootPath
+    if (!path.startsWith(`${rootName}/`)) continue
+
+    const exactFile = job.files.find((file) => normalizeVaultPath(file.relativePath) === path)
+    if (type === 'file' && exactFile) return exactFile.sourcePath
+
+    const childFile = job.files.find((file) => normalizeVaultPath(file.relativePath).startsWith(`${path}/`))
+    if (!childFile) continue
+
+    const suffix = normalizeVaultPath(childFile.relativePath).slice(path.length).replace(/^\/+/, '')
+    return dropLocalPathSegments(childFile.sourcePath, suffix.split('/').filter(Boolean).length)
+  }
+
+  return ''
+}
+
+function virtualRowsForListing(listing: RemoteListing | null, jobs: SyncJob[], existingPaths: Set<string>) {
+  const currentPath = listing?.path || ''
+  const groups = new Map<string, Array<SyncJob['files'][number]>>()
+
+  for (const job of jobs) {
+    for (const file of job.files) {
+      if (file.status === 'done') continue
+      const childPath = childPathForListing(currentPath, file.relativePath)
+      if (!childPath || existingPaths.has(childPath)) continue
+      groups.set(childPath, [...(groups.get(childPath) || []), file])
+    }
+  }
+
+  return Array.from(groups.entries()).map(([relativePath, files]) => {
+    const isFile = files.some((file) => normalizeVaultPath(file.relativePath) === relativePath)
+    const modifiedAt = files
+      .map((file) => new Date(file.modifiedAt || 0).getTime())
+      .filter(Number.isFinite)
+      .sort((left, right) => right - left)[0]
+
+    return {
+      name: baseName(relativePath),
+      type: isFile ? 'file' : 'directory',
+      relativePath,
+      sizeBytes: isFile ? files.find((file) => normalizeVaultPath(file.relativePath) === relativePath)?.sizeBytes || 0 : 0,
+      sizeLabel: isFile ? formatSizeLabel(files.find((file) => normalizeVaultPath(file.relativePath) === relativePath)?.sizeBytes || 0) : '',
+      modifiedAt: modifiedAt ? new Date(modifiedAt).toISOString() : '',
+      localPath: localPathForVaultPath(jobs, relativePath, isFile ? 'file' : 'directory'),
+      progress: progressForVaultPath(jobs, relativePath, isFile ? 'file' : 'directory', false),
+      virtual: true,
+    } satisfies RemoteBrowserRow
+  })
+}
+
+function formatSizeLabel(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`
+}
+
 function formatVaultGb(folder: CloudFolder) {
   if (!Number.isFinite(folder.sizeBytes)) {
     return folder.sizeLabel || '0 GB'
@@ -250,11 +434,6 @@ function onlineClientCount(folder: CloudFolder) {
   return folder.devices.length
 }
 
-function clientCountLabel(folder: CloudFolder) {
-  const count = onlineClientCount(folder)
-  return count === 1 ? '1 client' : `${count} clients`
-}
-
 function matchesFilter(folder: CloudFolder, filter: FilterKey) {
   if (filter === 'local') return folder.localMode === 'local' || folder.localMode === 'mirror'
   if (filter === 'online') return folder.localMode === 'online'
@@ -274,8 +453,7 @@ function App() {
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteError, setRemoteError] = useState('')
   const [remoteNotice, setRemoteNotice] = useState('')
-  const [vaultName, setVaultName] = useState('')
-  const [isRenamingVault, setIsRenamingVault] = useState(false)
+  const [shareDialog, setShareDialog] = useState<ShareDialogState>(null)
 
   const api = window.nubemDrive
 
@@ -345,10 +523,6 @@ function App() {
   const currentRole = roleBadge(state)
 
   useEffect(() => {
-    setVaultName(selectedFolder?.name || '')
-  }, [selectedFolder?.id, selectedFolder?.name])
-
-  useEffect(() => {
     let active = true
 
     async function loadRemoteRoot() {
@@ -384,6 +558,39 @@ function App() {
     }
   }, [api, selectedFolderId, selectedIsLinkedClientVault])
 
+  useEffect(() => {
+    if (!api || !selectedFolderId || !selectedIsLinkedClientVault) {
+      return
+    }
+
+    const driveApi = api
+    let active = true
+    let inFlight = false
+
+    async function refreshCurrentRemotePath() {
+      if (inFlight) return
+      inFlight = true
+
+      try {
+        const listing = await driveApi.browseRemoteFolder(selectedFolderId, remoteListing?.path || '')
+        if (active) {
+          setRemoteListing(listing)
+        }
+      } catch {
+        // The connection strip already reports server availability; keep the file list stable during retries.
+      } finally {
+        inFlight = false
+      }
+    }
+
+    const interval = window.setInterval(refreshCurrentRemotePath, 5000)
+
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [api, selectedFolderId, selectedIsLinkedClientVault, remoteListing?.path])
+
   async function chooseFolders() {
     if (!api) return
     if (!isServerApp && !selectedIsLinkedClientVault) {
@@ -416,21 +623,8 @@ function App() {
     }
   }
 
-  async function removeFolder(folder: CloudFolder) {
-    if (!api) return
-    const nextState = await api.removeFolder(folder.id)
-    setState(nextState)
-    setSelectedId((currentId) => {
-      if (currentId && nextState.folders.some((item) => item.id === currentId)) {
-        return currentId
-      }
-
-      return nextState.folders[0]?.id
-    })
-  }
-
-  function revealFolder(folder: CloudFolder) {
-    api?.revealFolder(folder.path)
+  function revealLocalPath(localPath: string) {
+    api?.revealFolder(localPath)
   }
 
   async function browseRemotePath(relativePath: string) {
@@ -479,6 +673,29 @@ function App() {
     }
   }
 
+  async function shareRemoteEntry(entry: RemoteEntry) {
+    if (!api || !selectedFolder) return
+    setShareDialog({ busy: true, copied: false, entry, error: '', share: null })
+    try {
+      const share = await api.createShareLink(selectedFolder.id, entry.relativePath, entry.type, entry.name)
+      setShareDialog({ busy: false, copied: false, entry, error: '', share })
+    } catch (error) {
+      setShareDialog({
+        busy: false,
+        copied: false,
+        entry,
+        error: error instanceof Error ? error.message : 'Could not create share link',
+        share: null,
+      })
+    }
+  }
+
+  async function copyShareUrl() {
+    if (!api || !shareDialog?.share?.url) return
+    await api.copyText(shareDialog.share.url)
+    setShareDialog((current) => current ? { ...current, copied: true } : current)
+  }
+
   async function refreshConnection() {
     if (!api) return
     setPairBusy('retry')
@@ -494,23 +711,6 @@ function App() {
       setPairError(error instanceof Error ? error.message : 'Could not set up vault')
     } finally {
       setPairBusy(null)
-    }
-  }
-
-  async function renameSelectedVault() {
-    if (!api || !selectedFolder || !selectedIsClientVault) return
-    const cleanName = vaultName.trim()
-    if (!cleanName || cleanName === selectedFolder.name) {
-      setVaultName(selectedFolder.name)
-      return
-    }
-
-    setIsRenamingVault(true)
-    try {
-      const nextState = await api.renameVault(selectedFolder.id, cleanName)
-      setState(nextState)
-    } finally {
-      setIsRenamingVault(false)
     }
   }
 
@@ -583,14 +783,14 @@ function App() {
               </button>
             ) : null}
             <button
-              className={isServerApp ? 'primary-button storage-button' : 'primary-button icon-only'}
+              className="primary-button storage-button"
               disabled={!canChooseFolders}
               onClick={chooseFolders}
               title={chooseFoldersTitle}
               aria-label={chooseFoldersTitle}
             >
               <Plus size={18} />
-              {isServerApp ? <span>Add storage</span> : null}
+              <span>{isServerApp ? 'Add storage' : 'Add to Nubem'}</span>
             </button>
           </div>
         </header>
@@ -616,11 +816,14 @@ function App() {
               <RemoteBrowser
                 busy={remoteBusy}
                 error={remoteError}
+                jobs={selectedSyncJobs}
                 listing={remoteListing}
                 notice={remoteNotice}
                 onDelete={deleteRemoteEntry}
                 onDownload={downloadRemoteEntry}
                 onOpen={browseRemotePath}
+                onReveal={revealLocalPath}
+                onShare={shareRemoteEntry}
               />
             ) : (
               <>
@@ -689,91 +892,17 @@ function App() {
               </>
             )}
           </section>
-
-          <aside className="inspector" aria-label="Folder details">
-            {selectedFolder ? (
-              <>
-                <div className="inspector-head">
-                  <div className="folder-glyph">
-                    <Folder size={24} />
-                  </div>
-                  {selectedIsClientVault ? (
-                    <form className="vault-name-form" onSubmit={(event) => {
-                      event.preventDefault()
-                      renameSelectedVault()
-                    }}>
-                      <input
-                        aria-label="Vault name"
-                        maxLength={80}
-                        onBlur={renameSelectedVault}
-                        onChange={(event) => setVaultName(event.target.value)}
-                        value={vaultName}
-                      />
-                      <button
-                        disabled={isRenamingVault || !vaultName.trim() || vaultName.trim() === selectedFolder.name}
-                        title="Rename vault"
-                        aria-label="Rename vault"
-                        type="submit"
-                      >
-                        {isRenamingVault ? <RefreshCcw size={15} /> : vaultName.trim() === selectedFolder.name ? <Pencil size={15} /> : <Save size={15} />}
-                      </button>
-                    </form>
-                  ) : (
-                    <div>
-                      <h2>{selectedFolder.name}</h2>
-                    </div>
-                  )}
-                </div>
-
-                {!selectedIsClientVault ? (
-                  <div className="quick-actions">
-                    <button onClick={() => revealFolder(selectedFolder)} title={selectedFolder.path} aria-label="Reveal folder">
-                      <ExternalLink size={15} />
-                    </button>
-                    <button
-                      className="danger-action"
-                      onClick={() => removeFolder(selectedFolder)}
-                      title="Remove from Nubem"
-                      aria-label="Remove from Nubem"
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                ) : null}
-
-                <div className="meta-strip">
-                  <span title="Used">{isServerApp && !selectedIsClientVault ? formatVaultGb(selectedFolder) : selectedFolder.sizeLabel}</span>
-                  <span title="Items">{selectedFolder.itemCount.toLocaleString()}</span>
-                  <span title="Updated">{formatTime(selectedFolder.updatedAt)}</span>
-                  <span title={isServerApp && !selectedIsClientVault ? 'Connected clients' : 'Devices'}>
-                    {isServerApp && !selectedIsClientVault ? clientCountLabel(selectedFolder) : selectedFolder.devices.length}
-                  </span>
-                </div>
-
-                {selectedIsClientVault ? <SyncProgressPanel jobs={selectedSyncJobs} /> : null}
-
-                {selectedIsClientVault ? (
-                  <section className="control-section" aria-label="Nubem upload">
-                    <button
-                      className="primary-button full-width"
-                      disabled={!selectedIsLinkedClientVault}
-                      onClick={chooseFolders}
-                      title={selectedIsLinkedClientVault ? 'Add to Nubem' : 'Waiting for Nubem Server'}
-                      aria-label={selectedIsLinkedClientVault ? 'Add to Nubem' : 'Waiting for Nubem Server'}
-                    >
-                      <Plus size={17} />
-                      Add to Nubem
-                    </button>
-                  </section>
-                ) : null}
-
-              </>
-            ) : (
-              <div className="empty-state">Select a folder</div>
-            )}
-          </aside>
         </div>
       </section>
+
+      {shareDialog ? (
+        <ShareDialog
+          copied={shareDialog.copied}
+          dialog={shareDialog}
+          onClose={() => setShareDialog(null)}
+          onCopy={copyShareUrl}
+        />
+      ) : null}
 
     </main>
   )
@@ -782,24 +911,39 @@ function App() {
 function RemoteBrowser({
   busy,
   error,
+  jobs,
   listing,
   notice,
   onDelete,
   onDownload,
   onOpen,
+  onReveal,
+  onShare,
 }: {
   busy: boolean
   error: string
+  jobs: SyncJob[]
   listing: RemoteListing | null
   notice: string
   onDelete: (entry: RemoteEntry) => void
   onDownload: (entry: RemoteEntry) => void
   onOpen: (relativePath: string) => void
+  onReveal: (localPath: string) => void
+  onShare: (entry: RemoteEntry) => void
 }) {
   const [sortKey, setSortKey] = useState<RemoteSortKey>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const crumbs = pathCrumbs(listing?.path || '')
-  const entries = [...(listing?.entries || [])].sort((left, right) => {
+  const remoteEntries = listing?.entries || []
+  const existingPaths = new Set(remoteEntries.map((entry) => normalizeVaultPath(entry.relativePath)))
+  const rows: RemoteBrowserRow[] = [
+    ...remoteEntries.map((entry) => ({
+      ...entry,
+      localPath: localPathForVaultPath(jobs, entry.relativePath, entry.type),
+      progress: progressForVaultPath(jobs, entry.relativePath, entry.type, true),
+    })),
+    ...virtualRowsForListing(listing, jobs, existingPaths),
+  ].sort((left, right) => {
     if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
 
     const direction = sortDirection === 'asc' ? 1 : -1
@@ -836,7 +980,7 @@ function RemoteBrowser({
       <div className="remote-head">
         <div className="remote-title">
           <strong>{listing?.path ? listing.path.split('/').slice(-1)[0] : 'Files'}</strong>
-          <span>{entries.length.toLocaleString()} items</span>
+          <span>{rows.length.toLocaleString()} items</span>
         </div>
         {listing?.path ? (
           <button className="icon-button compact" onClick={() => onOpen(listing.parentPath)} title="Up" aria-label="Up">
@@ -870,7 +1014,7 @@ function RemoteBrowser({
           <button className={sortKey === 'name' ? 'active' : ''} onClick={() => changeSort('name')}>
             Name {sortKey === 'name' ? sortIcon(sortDirection) : null}
           </button>
-          <span>Kind</span>
+          <span>Cloud</span>
           <button className={sortKey === 'size' ? 'active' : ''} onClick={() => changeSort('size')}>
             Size {sortKey === 'size' ? sortIcon(sortDirection) : null}
           </button>
@@ -880,36 +1024,67 @@ function RemoteBrowser({
           <span />
         </div>
 
-        {listing && entries.length === 0 && !busy ? <div className="remote-message">Empty</div> : null}
-        {entries.map((entry) => (
+        {listing && rows.length === 0 && !busy ? <div className="remote-message">Empty</div> : null}
+        {rows.map((entry) => {
+          const canUseRemote = !entry.virtual
+          const canReveal = Boolean(entry.localPath)
+          return (
           <div
-            className="remote-entry"
-            key={entry.relativePath}
+            className={`remote-entry ${entry.virtual ? 'virtual' : ''}`}
+            key={`${entry.virtual ? 'local' : 'remote'}:${entry.relativePath}`}
             title={entry.name}
           >
             <button
               className="remote-name"
-              disabled={busy}
-              onClick={() => (entry.type === 'directory' ? onOpen(entry.relativePath) : onDownload(entry))}
+              disabled={busy || (entry.virtual && !canReveal)}
+              onClick={() => {
+                if (entry.virtual && entry.localPath) {
+                  onReveal(entry.localPath)
+                  return
+                }
+
+                if (entry.type === 'directory') {
+                  onOpen(entry.relativePath)
+                  return
+                }
+
+                onDownload(entry)
+              }}
               title={entry.name}
             >
               <span className="remote-entry-icon">
                 {entry.type === 'directory' ? <FolderOpen size={17} /> : <FileText size={17} />}
               </span>
-              <strong>{entry.name}</strong>
+              <span className="remote-name-copy">
+                <strong>{entry.name}</strong>
+                <small>{entry.type === 'directory' ? 'Folder' : 'File'}</small>
+              </span>
             </button>
-            <span className="remote-kind">{entry.type === 'directory' ? 'Folder' : 'File'}</span>
+            <span className={`remote-progress ${entry.progress.status}`} title={entry.progress.detail}>
+              <span className="remote-progress-bar" aria-label={`${entry.name} ${entry.progress.percent}% in Nubem`}>
+                <span style={{ width: `${entry.progress.percent}%` }} />
+              </span>
+              <small>{entry.progress.label}</small>
+            </span>
             <span className="remote-size">{entry.type === 'directory' ? '-' : entry.sizeLabel}</span>
             <span className="remote-modified">{formatTime(entry.modifiedAt)}</span>
             <span className="remote-actions">
+              <button disabled={busy || !canUseRemote} onClick={() => onShare(entry)} title="Share" aria-label={`Share ${entry.name}`}>
+                <Share2 size={16} />
+              </button>
+              {canReveal ? (
+                <button disabled={busy} onClick={() => onReveal(entry.localPath || '')} title="Reveal" aria-label={`Reveal ${entry.name}`}>
+                  <ExternalLink size={16} />
+                </button>
+              ) : null}
               {entry.type === 'file' ? (
-                <button disabled={busy} onClick={() => onDownload(entry)} title="Download" aria-label={`Download ${entry.name}`}>
+                <button disabled={busy || !canUseRemote} onClick={() => onDownload(entry)} title="Download" aria-label={`Download ${entry.name}`}>
                   <Download size={16} />
                 </button>
               ) : null}
               <button
                 className="danger-action"
-                disabled={busy}
+                disabled={busy || !canUseRemote}
                 onClick={() => onDelete(entry)}
                 title="Delete from vault"
                 aria-label={`Delete ${entry.name} from vault`}
@@ -918,49 +1093,60 @@ function RemoteBrowser({
               </button>
             </span>
           </div>
-        ))}
+        )})}
       </div>
     </section>
   )
 }
 
-function SyncProgressPanel({ jobs }: { jobs: SyncJob[] }) {
-  if (jobs.length === 0) return null
+function ShareDialog({
+  copied,
+  dialog,
+  onClose,
+  onCopy,
+}: {
+  copied: boolean
+  dialog: NonNullable<ShareDialogState>
+  onClose: () => void
+  onCopy: () => void
+}) {
+  const shareUrl = dialog.share?.url || ''
+  const expiresLabel = dialog.share
+    ? `Expires after ${dialog.share.maxDownloads} downloads or ${formatTime(dialog.share.expiresAt)}`
+    : 'Creating link'
 
   return (
-    <section className="sync-progress-panel" aria-label="Sync progress">
-      <div className="sync-progress-head">
-        <UploadCloud size={16} />
-        <strong>Sync</strong>
-      </div>
-      {jobs.slice(0, 4).map((job) => {
-        const total = Math.max(job.totalFiles, job.files.length, 0)
-        const completed = job.completedFiles
-        const currentFile = job.files.find((file) => file.status !== 'done')
-        const activeFileProgress = currentFile && currentFile.sizeBytes > 0
-          ? Math.min(Math.max(currentFile.uploadedBytes / currentFile.sizeBytes, 0), 1)
-          : 0
-        const percent = total === 0 ? 100 : Math.round(((completed + activeFileProgress) / total) * 100)
-        const status = job.lastError || currentFile?.error || (job.status === 'complete' ? 'Complete' : currentFile?.relativePath || statusCopy.syncing)
-        const statusLabel = job.status === 'running' ? 'Syncing' : job.status === 'queued' ? 'Queued' : job.status === 'complete' ? 'Synced' : 'Error'
-
-        return (
-          <div className={`sync-job ${job.status}`} key={job.id}>
-            <div className="sync-job-title">
-              <strong title={job.rootPath}>{job.rootName}</strong>
-              <span>{completed}/{total}</span>
-            </div>
-            <div className="sync-job-bar" aria-label={`${job.rootName} ${percent}%`}>
-              <span style={{ width: `${percent}%` }} />
-            </div>
-            <div className="sync-job-detail" title={status}>
-              <span>{statusLabel}</span>
-              <span>{status}</span>
-            </div>
+    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        aria-label="Share link"
+        aria-modal="true"
+        className="share-dialog"
+        role="dialog"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <strong>{dialog.entry.name}</strong>
+            <span>{expiresLabel}</span>
           </div>
-        )
-      })}
-    </section>
+          <button onClick={onClose} title="Close" aria-label="Close">
+            <X size={16} />
+          </button>
+        </header>
+
+        {dialog.error ? <div className="share-error">{dialog.error}</div> : null}
+        {dialog.busy ? <div className="share-loading">Creating link</div> : null}
+        {shareUrl ? (
+          <div className="share-url-row">
+            <input readOnly value={shareUrl} aria-label="Share URL" />
+            <button className="primary-button" onClick={onCopy}>
+              <Copy size={16} />
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        ) : null}
+      </section>
+    </div>
   )
 }
 

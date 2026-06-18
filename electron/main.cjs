@@ -1,4 +1,3 @@
-const { app, BrowserWindow, Notification, dialog, ipcMain, shell } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -6,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { app, BrowserWindow, Notification, clipboard, dialog, ipcMain, shell } = require('electron');
 
 let packageMetadata = {};
 try {
@@ -27,8 +27,12 @@ const appFlavor = detectAppFlavor();
 const isServerApp = appFlavor === 'server';
 const appProductName = isServerApp ? 'Nubem Server' : 'Nubem Drive';
 const appUserDataName = isServerApp ? 'nubem-server' : 'nubem-drive';
+const appUserModelId = isServerApp ? 'org.nubem.server' : 'org.nubem.drive';
 
 app.setName(appProductName);
+if (process.platform === 'win32') {
+  app.setAppUserModelId(appUserModelId);
+}
 app.setPath('userData', path.join(app.getPath('appData'), appUserDataName));
 
 const isDev = !app.isPackaged;
@@ -40,6 +44,8 @@ let pairingRefreshWork;
 let syncTimer;
 let syncWork;
 let syncWorkStartedAt = 0;
+let commandTimer;
+let commandWork;
 let storageServiceStatusCache = { checkedAt: 0, value: 'offline' };
 const storageServiceName = isServerApp ? 'nubem-server-storage.service' : 'nubem-drive-storage.service';
 
@@ -47,15 +53,38 @@ const dataFile = () => path.join(app.getPath('userData'), 'state.json');
 const legacyDriveDataFile = () => path.join(app.getPath('appData'), 'nubem-drive', 'state.json');
 const defaultRelayUrl = 'https://drive.nubem.org';
 const defaultUpdateManifestUrl = `${defaultRelayUrl}/latest.json`;
-const relayChunkSize = 256 * 1024;
+const relayChunkSize = 4 * 1024 * 1024;
+const defaultRelayTimeoutMs = 20 * 1000;
+const relayChunkReadTimeoutMs = 90 * 1000;
+const relayChunkWriteTimeoutMs = 5 * 60 * 1000;
+const relayResultTimeoutMs = 45 * 1000;
+const syncUploadConcurrency = Math.max(
+  1,
+  Math.min(8, Number.parseInt(process.env.NUBEM_SYNC_CONCURRENCY || '4', 10) || 4)
+);
 
 const now = () => new Date().toISOString();
 
 const writeJsonFileAtomic = (file, value) => {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    if (!['EEXIST', 'EPERM'].includes(error?.code)) {
+      fs.rmSync(tmp, { force: true });
+      throw error;
+    }
+
+    try {
+      fs.rmSync(file, { force: true });
+      fs.renameSync(tmp, file);
+    } catch {
+      fs.copyFileSync(tmp, file);
+      fs.rmSync(tmp, { force: true });
+    }
+  }
 };
 
 const backupUnreadableState = (file) => {
@@ -122,6 +151,14 @@ const mergeExistingServerVaultsOnEmptyWrite = (file, normalized) => {
     folders: existingFolders,
     devices: existingDevices.length > (normalized.devices?.length || 0) ? existingDevices : normalized.devices,
   };
+};
+
+const appIconPath = () => {
+  const extension = process.platform === 'win32' ? 'ico' : 'png';
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, `icon.${extension}`)]
+    : [path.join(__dirname, '..', 'build', `icon.${extension}`)];
+  return candidates.find((candidate) => fs.existsSync(candidate));
 };
 
 const updatePlatformKey = () => {
@@ -270,7 +307,7 @@ const normalizeSyncFile = (file = {}) => ({
   relativePath: String(file.relativePath || ''),
   sizeBytes: Number.isFinite(file.sizeBytes) ? file.sizeBytes : Number(file.size || 0) || 0,
   modifiedAt: String(file.modifiedAt || ''),
-  status: ['pending', 'done', 'error'].includes(file.status) ? file.status : 'pending',
+  status: ['pending', 'uploading', 'done', 'error'].includes(file.status) ? file.status : 'pending',
   attempts: Number.isFinite(file.attempts) ? file.attempts : 0,
   uploadedBytes: Number.isFinite(file.uploadedBytes) ? file.uploadedBytes : 0,
   error: String(file.error || ''),
@@ -512,17 +549,23 @@ const ensureState = () => {
     writeJsonFileAtomic(file, makeInitialState());
   }
 
-  try {
-    const rawState = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-    const state = normalizeState(JSON.parse(rawState), { restoreUpdates: true });
-    writeState(state);
-    return state;
-  } catch {
-    backupUnreadableState(file);
-    const fresh = makeInitialState();
-    writeJsonFileAtomic(file, fresh);
-    return fresh;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const rawState = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+      const state = normalizeState(JSON.parse(rawState), { restoreUpdates: true });
+      writeState(state);
+      return state;
+    } catch {
+      if (attempt < 4) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+    }
   }
+
+  backupUnreadableState(file);
+  const fresh = makeInitialState();
+  writeJsonFileAtomic(file, fresh);
+  return fresh;
 };
 
 const writeState = (state) => {
@@ -564,9 +607,23 @@ const localRelayDevice = (state, role = state.pairing.role) => ({
   role: role || 'client',
 });
 
-const relayRequest = async (relayUrl, endpoint, body) => {
+const relayRequestTimeout = (endpoint, body = {}) => {
+  if (endpoint === '/api/drive/requests/chunk') {
+    return Object.prototype.hasOwnProperty.call(body || {}, 'data')
+      ? relayChunkWriteTimeoutMs
+      : relayChunkReadTimeoutMs;
+  }
+
+  if (endpoint === '/api/drive/requests/result') {
+    return relayResultTimeoutMs;
+  }
+
+  return defaultRelayTimeoutMs;
+};
+
+const relayRequest = async (relayUrl, endpoint, body, timeoutMs = relayRequestTimeout(endpoint, body)) => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${normalizeRelayUrl(relayUrl)}${endpoint}`, {
@@ -1713,6 +1770,30 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
   return { ok: true, filePath: saveResult.filePath };
 };
 
+const createShareLink = async (folderId, relativePath = '', type = 'file', name = '') => {
+  const { folder, pairId, relayUrl, token } = getVaultCredentials(folderId);
+  const safeRelativePath = normalizeRemoteRelativePath(relativePath);
+  if (!safeRelativePath) {
+    throw new Error('Select a file or folder');
+  }
+
+  const payload = await relayRequest(relayUrl, '/api/drive/shares/create', {
+    pairId,
+    token,
+    folderId,
+    relativePath: toRemoteRequestPath(folder, safeRelativePath),
+    type: type === 'directory' ? 'directory' : 'file',
+    name: name || path.basename(safeRelativePath),
+  });
+
+  if (!payload.share?.url) {
+    throw new Error('Could not create share link');
+  }
+
+  writeState(addActivity(ensureState(), 'link', payload.share.name || name || path.basename(safeRelativePath), 'Share link created'));
+  return payload.share;
+};
+
 const deleteCloudPath = (state, folderId, relativePath = '') => {
   const safeRelativePath = validateRelativePath(relativePath);
   if (!safeRelativePath) {
@@ -1760,6 +1841,52 @@ const requireDeleteResult = (result) => {
   throw new Error('Storage PC needs the latest Nubem Drive to delete from vault');
 };
 
+const remotePathMatchesDelete = (relativePath = '', deletedPath = '', deletedType = 'folder') => {
+  const remotePath = normalizeRemoteRelativePath(relativePath);
+  const safeDeletedPath = normalizeRemoteRelativePath(deletedPath);
+  if (!remotePath || !safeDeletedPath) return false;
+  if (remotePath === safeDeletedPath) return true;
+  return deletedType === 'folder' && remotePath.startsWith(`${safeDeletedPath}/`);
+};
+
+const removeDeletedPathFromSyncJobs = (state, vaultFolderId, deleteResult) => {
+  const deletedPath = normalizeRemoteRelativePath(deleteResult?.relativePath || '');
+  const deletedType = deleteResult?.type === 'file' ? 'file' : 'folder';
+  if (!deletedPath) return state;
+
+  let changed = false;
+  const syncJobs = [];
+
+  for (const job of state.syncJobs) {
+    if (job.vaultFolderId !== vaultFolderId) {
+      syncJobs.push(job);
+      continue;
+    }
+
+    const nextFiles = job.files.filter((file) => !remotePathMatchesDelete(file.relativePath, deletedPath, deletedType));
+    if (nextFiles.length === job.files.length) {
+      syncJobs.push(job);
+      continue;
+    }
+
+    changed = true;
+    if (nextFiles.length === 0) {
+      continue;
+    }
+
+    const totalBytes = nextFiles.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0);
+    syncJobs.push(normalizeSyncJob({
+      ...job,
+      files: nextFiles,
+      totalFiles: nextFiles.length,
+      totalBytes,
+      updatedAt: now(),
+    }));
+  }
+
+  return changed ? applyVaultSyncStatus({ ...state, syncJobs }, vaultFolderId) : state;
+};
+
 const deleteVaultRelativePath = async (folderId, relativePath = '', timeoutMs = 15 * 60 * 1000) => {
   const safeRelativePath = validateRelativePath(relativePath).split(path.sep).join('/');
   if (!safeRelativePath) {
@@ -1796,7 +1923,8 @@ const deleteRemoteEntry = async (folderId, relativePath = '') => {
   }
 
   const deleteResult = await deleteVaultRelativePath(folderId, safeRelativePath);
-  writeState(addActivity(ensureState(), 'remove', deleteResult.name || name, 'Deleted from vault'));
+  const nextState = removeDeletedPathFromSyncJobs(ensureState(), folderId, deleteResult);
+  writeState(addActivity(nextState, 'remove', deleteResult.name || name, 'Deleted from vault'));
   return { ok: true, deleted: deleteResult };
 };
 
@@ -2050,23 +2178,29 @@ const finishSyncJob = (jobId) => {
 };
 
 const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
-  const existingKeys = new Set(
+  const activeKeys = new Set(
     state.syncJobs
       .filter((job) => job.status !== 'complete')
       .map((job) => `${job.vaultFolderId}:${path.resolve(job.rootPath)}`)
   );
+  const replacementKeys = new Set();
   const jobs = [];
 
   for (const sourcePath of resolveUploadPaths(folderPaths)) {
     const root = path.resolve(sourcePath);
     const key = `${vaultFolderId}:${root}`;
-    if (existingKeys.has(key)) {
+    if (activeKeys.has(key)) {
       continue;
     }
 
     const job = makeUploadJob(vaultFolderId, root);
+    if (job.totalFiles === 0) {
+      continue;
+    }
+
     jobs.push(job);
-    existingKeys.add(key);
+    activeKeys.add(key);
+    replacementKeys.add(key);
   }
 
   if (jobs.length === 0) {
@@ -2078,7 +2212,10 @@ const enqueueUploadJobs = (state, vaultFolderId, folderPaths) => {
     applyVaultSyncStatus(
       {
         ...state,
-        syncJobs: [...state.syncJobs, ...jobs],
+        syncJobs: [
+          ...state.syncJobs.filter((job) => !replacementKeys.has(`${job.vaultFolderId}:${path.resolve(job.rootPath)}`)),
+          ...jobs,
+        ],
       },
       vaultFolderId
     ),
@@ -2124,12 +2261,69 @@ const nextRunnableSyncJob = () => {
 
 const hasRunningSyncJob = (state = ensureState()) => state.syncJobs.some((job) => job.status === 'running');
 
+const processSyncFileUpload = async (jobId, job, file) => {
+  if (!fs.existsSync(file.sourcePath)) {
+    markSyncFileDone(jobId, file, { error: 'Source missing' });
+    return;
+  }
+
+  const stat = fs.statSync(file.sourcePath);
+  if (!stat.isFile()) {
+    markSyncFileDone(jobId, file, { error: 'Source skipped' });
+    return;
+  }
+
+  const currentFile = {
+    ...file,
+    status: 'uploading',
+    sizeBytes: stat.size,
+    modifiedAt: stat.mtime.toISOString(),
+  };
+
+  updateSyncFile(jobId, file.relativePath, {
+    status: 'uploading',
+    sizeBytes: currentFile.sizeBytes,
+    modifiedAt: currentFile.modifiedAt,
+    uploadedBytes: 0,
+    error: '',
+  });
+
+  if (!(await remoteFileMatches(job.vaultFolderId, currentFile))) {
+    await uploadFileToVault(
+      job.vaultFolderId,
+      currentFile.sourcePath,
+      currentFile.relativePath,
+      currentFile,
+      (uploadedBytes, totalBytes) => {
+        const isWaitingForStorage = uploadedBytes >= totalBytes;
+        updateSyncFile(job.id, currentFile.relativePath, {
+          status: isWaitingForStorage ? 'pending' : 'uploading',
+          uploadedBytes,
+          error: isWaitingForStorage
+            ? 'Waiting for storage'
+            : `Uploading ${formatBytes(uploadedBytes)} of ${formatBytes(totalBytes)}`,
+        });
+      }
+    );
+  }
+
+  markSyncFileDone(jobId, currentFile, {
+    sizeBytes: currentFile.sizeBytes,
+    modifiedAt: currentFile.modifiedAt,
+  });
+};
+
 const processUploadJob = async (jobId) => {
   let state = updateSyncJob(jobId, (job) => ({
     ...job,
     status: 'running',
     lastError: '',
     nextAttemptAt: '',
+    files: job.files.map((file) =>
+      file.status === 'uploading'
+        ? { ...file, status: 'pending', uploadedBytes: 0, error: '' }
+        : file
+    ),
   }));
 
   while (true) {
@@ -2163,58 +2357,48 @@ const processUploadJob = async (jobId) => {
       }));
     }
 
-    const file = job.files.find((item) => item.status !== 'done');
-    if (!file) {
+    const staleUploadingFiles = job.files.filter((item) => item.status === 'uploading');
+    if (staleUploadingFiles.length > 0) {
+      updateSyncJob(jobId, (current) => ({
+        ...current,
+        files: current.files.map((file) =>
+          file.status === 'uploading'
+            ? { ...file, status: 'pending', uploadedBytes: 0, error: '' }
+            : file
+        ),
+      }));
+      continue;
+    }
+
+    const pendingFiles = job.files.filter((item) => item.status !== 'done');
+    if (pendingFiles.length === 0) {
       return finishSyncJob(jobId);
     }
 
-    try {
-      if (!fs.existsSync(file.sourcePath)) {
-        markSyncFileDone(jobId, file, { error: 'Source missing' });
-        continue;
+    const batch = pendingFiles.slice(0, syncUploadConcurrency);
+    const batchPaths = new Set(batch.map((file) => file.relativePath));
+    updateSyncJob(jobId, (current) => ({
+      ...current,
+      status: 'running',
+      lastError: '',
+      nextAttemptAt: '',
+      files: current.files.map((file) =>
+        batchPaths.has(file.relativePath)
+          ? { ...file, status: 'uploading', uploadedBytes: 0, error: '' }
+          : file
+      ),
+    }));
+
+    const results = await Promise.allSettled(batch.map((file) => processSyncFileUpload(jobId, job, file)));
+    const failed = results
+      .map((result, index) => ({ result, file: batch[index] }))
+      .filter(({ result }) => result.status === 'rejected');
+
+    if (failed.length > 0) {
+      for (const { result, file } of failed) {
+        const message = result.reason instanceof Error ? result.reason.message : 'Upload failed';
+        markSyncFileRetry(jobId, file, message);
       }
-
-      const stat = fs.statSync(file.sourcePath);
-      if (!stat.isFile()) {
-        markSyncFileDone(jobId, file, { error: 'Source skipped' });
-        continue;
-      }
-
-      const currentFile = {
-        ...file,
-        sizeBytes: stat.size,
-        modifiedAt: stat.mtime.toISOString(),
-      };
-
-      updateSyncFile(jobId, file.relativePath, {
-        sizeBytes: currentFile.sizeBytes,
-        modifiedAt: currentFile.modifiedAt,
-        uploadedBytes: 0,
-        error: '',
-      });
-
-      if (!(await remoteFileMatches(job.vaultFolderId, currentFile))) {
-        await uploadFileToVault(
-          job.vaultFolderId,
-          currentFile.sourcePath,
-          currentFile.relativePath,
-          currentFile,
-          (uploadedBytes, totalBytes) => {
-            updateSyncFile(job.id, currentFile.relativePath, {
-              uploadedBytes,
-              error: `Uploading ${formatBytes(uploadedBytes)} of ${formatBytes(totalBytes)}`,
-            });
-          }
-        );
-      }
-
-      markSyncFileDone(jobId, currentFile, {
-        sizeBytes: currentFile.sizeBytes,
-        modifiedAt: currentFile.modifiedAt,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Upload failed';
-      markSyncFileRetry(jobId, file, message);
       return ensureState();
     }
   }
@@ -2269,13 +2453,22 @@ const recoverInterruptedSyncJobs = () => {
   const state = ensureState();
   let changed = false;
   const syncJobs = state.syncJobs.map((job) => {
-    if (job.status !== 'running') return job;
+    if (job.status === 'complete' || job.status === 'error') return job;
+
+    const hasUploadingFiles = job.files.some((file) => file.status === 'uploading');
+    if (job.status !== 'running' && !hasUploadingFiles) return job;
+
     changed = true;
     return normalizeSyncJob({
       ...job,
       status: 'queued',
       nextAttemptAt: '',
       lastError: job.lastError || 'Interrupted; retrying',
+      files: job.files.map((file) =>
+        file.status === 'uploading'
+          ? { ...file, status: 'pending', uploadedBytes: 0, error: 'Interrupted; retrying' }
+          : file
+      ),
     });
   });
 
@@ -2301,13 +2494,17 @@ const cloudFoldersToDefaultVault = async (folderPaths) => {
   }
 
   const result = enqueueUploadJobs(state, vault.id, folderPaths);
+  if (result.jobs.length === 0) {
+    throw new Error('No files found to upload');
+  }
+
   state = result.state;
   wakeSyncProcessor();
 
   return state;
 };
 
-const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
+const removeCloudFoldersFromDefaultVault = async (folderPaths, options = {}) => {
   let state = ensureState();
   const vault = findDefaultClientVault(state);
 
@@ -2316,29 +2513,32 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
     throw new Error('Nubem storage unavailable');
   }
 
-  const roots = resolveDirectoryPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
+  const roots = resolveUploadPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
   const matches = state.syncJobs.filter(
     (job) => job.vaultFolderId === vault.id && roots.includes(path.resolve(job.rootPath))
   );
 
   if (matches.length === 0) {
-    throw new Error('Folder is not in Nubem');
+    throw new Error('File or folder is not in Nubem');
   }
 
   const uniqueRoots = Array.from(new Map(matches.map((job) => [path.resolve(job.rootPath), job])).values());
   const label = uniqueRoots.length === 1 ? uniqueRoots[0].rootName : `${uniqueRoots.length} folders`;
-  const result = await dialog.showMessageBox(createWindow(), {
-    type: 'warning',
-    buttons: ['Remove', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
-    title: 'Remove from Nubem',
-    message: `Remove "${label}" from Nubem?`,
-    detail: 'Files stay on this computer. The vault copy is removed from the storage PC for paired devices.',
-  });
+  const shouldConfirm = options.confirm !== false;
+  if (shouldConfirm) {
+    const result = await dialog.showMessageBox(createWindow(), {
+      type: 'warning',
+      buttons: ['Remove', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Remove from Nubem',
+      message: `Remove "${label}" from Nubem?`,
+      detail: 'Files stay on this computer. The vault copy is removed from the storage PC for paired devices.',
+    });
 
-  if (result.response !== 0) {
-    return ensureState();
+    if (result.response !== 0) {
+      return ensureState();
+    }
   }
 
   for (const job of uniqueRoots) {
@@ -2350,12 +2550,14 @@ const removeCloudFoldersFromDefaultVault = async (folderPaths) => {
   }
 
   state = ensureState();
-  const removedJobIds = new Set(matches.map((job) => job.id));
+  const removedRootPaths = new Set(uniqueRoots.map((job) => path.resolve(job.rootPath)));
   const nextState = addActivity(
     applyVaultSyncStatus(
       {
         ...state,
-        syncJobs: state.syncJobs.filter((job) => !removedJobIds.has(job.id)),
+        syncJobs: state.syncJobs.filter((job) => (
+          job.vaultFolderId !== vault.id || !removedRootPaths.has(path.resolve(job.rootPath))
+        )),
       },
       vault.id
     ),
@@ -2753,8 +2955,6 @@ const getCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-c
 
 const getRemoveCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-remove-folder:', '--remove-cloud-folder');
 
-const getToggleCloudFolderArgs = (argv = process.argv) => getFolderArgs(argv, 'nubem-toggle-folder:', '--toggle-cloud-folder');
-
 const notifyClouded = (added) => {
   if (!Notification.isSupported()) {
     return;
@@ -2810,6 +3010,7 @@ function createWindow() {
     minWidth: 1060,
     minHeight: 680,
     title: appProductName,
+    icon: appIconPath(),
     backgroundColor: '#f4f1ea',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -2884,10 +3085,10 @@ const cloudFoldersAndNotify = async (folderPaths) => {
   }
 };
 
-const removeCloudFoldersAndNotify = async (folderPaths) => {
-  const folders = resolveDirectoryPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
+const removeCloudFoldersAndNotify = async (folderPaths, options = {}) => {
+  const folders = resolveUploadPaths(folderPaths).map((folderPath) => ({ name: path.basename(folderPath) || folderPath }));
   if (folders.length === 0) {
-    notifyCloudError('Select a folder to remove');
+    notifyCloudError('Select a file or folder to remove');
     return;
   }
 
@@ -2895,41 +3096,90 @@ const removeCloudFoldersAndNotify = async (folderPaths) => {
   notifyCloudRemoveStarted(folders);
 
   try {
-    await removeCloudFoldersFromDefaultVault(folderPaths);
+    await removeCloudFoldersFromDefaultVault(folderPaths, options);
     notifyCloudRemoved(folders);
   } catch (error) {
+    writeCommandLog('remove-failed', {
+      paths: folderPaths,
+      error: error instanceof Error ? error.message : String(error),
+    });
     notifyCloudError(error instanceof Error ? error.message : 'Could not remove from Nubem');
   }
 };
 
-const toggleCloudFoldersAndNotify = async (folderPaths) => {
-  const state = ensureState();
-  const vault = findDefaultClientVault(state);
+const commandQueueDir = () => path.join(app.getPath('userData'), 'commands');
 
-  if (!vault) {
-    await cloudFoldersAndNotify(folderPaths);
-    return;
+const writeCommandLog = (event, detail = {}) => {
+  try {
+    fs.appendFileSync(
+      path.join(app.getPath('userData'), 'commands.log'),
+      `${JSON.stringify({ at: now(), event, ...detail })}\n`
+    );
+  } catch {
+    // Command logging should never block context menu handling.
+  }
+};
+
+const processQueuedCommands = async () => {
+  if (commandWork) {
+    return commandWork;
   }
 
-  const roots = resolveDirectoryPaths(folderPaths).map((folderPath) => path.resolve(folderPath));
-  if (roots.length === 0) {
-    notifyCloudError('Select a folder');
-    return;
+  commandWork = (async () => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(commandQueueDir())
+        .filter((entry) => entry.toLowerCase().endsWith('.json'))
+        .sort();
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const commandPath = path.join(commandQueueDir(), entry);
+      let command;
+      try {
+        command = JSON.parse(fs.readFileSync(commandPath, 'utf8').replace(/^\uFEFF/, ''));
+      } catch {
+        writeCommandLog('invalid-json', { file: entry });
+        fs.rmSync(commandPath, { force: true });
+        continue;
+      }
+
+      fs.rmSync(commandPath, { force: true });
+
+      const paths = Array.isArray(command.paths) ? command.paths.map(String).filter(Boolean) : [];
+      writeCommandLog('received', { type: command.type, paths });
+      if (command.type === 'cloud-folder' && paths.length > 0) {
+        try {
+          await cloudFoldersAndNotify(paths);
+          writeCommandLog('completed', { type: command.type, paths });
+        } catch (error) {
+          writeCommandLog('failed', {
+            type: command.type,
+            paths,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        writeCommandLog('ignored', { type: command.type, paths });
+      }
+    }
+  })();
+
+  try {
+    await commandWork;
+  } finally {
+    commandWork = null;
   }
+};
 
-  const cloudedRoots = new Set(
-    state.syncJobs
-      .filter((job) => job.vaultFolderId === vault.id)
-      .map((job) => path.resolve(job.rootPath))
-  );
-  const allClouded = roots.every((root) => cloudedRoots.has(root));
-
-  if (allClouded) {
-    await removeCloudFoldersAndNotify(folderPaths);
-    return;
-  }
-
-  await cloudFoldersAndNotify(roots.filter((root) => !cloudedRoots.has(root)));
+const startCommandQueue = () => {
+  fs.mkdirSync(commandQueueDir(), { recursive: true });
+  processQueuedCommands().catch(() => undefined);
+  commandTimer = setInterval(() => {
+    processQueuedCommands().catch(() => undefined);
+  }, 1500);
 };
 
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -2940,15 +3190,8 @@ if (!singleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const cloudFolderArgs = getCloudFolderArgs(argv);
     const removeCloudFolderArgs = getRemoveCloudFolderArgs(argv);
-    const toggleCloudFolderArgs = getToggleCloudFolderArgs(argv);
 
     app.whenReady().then(async () => {
-      if (toggleCloudFolderArgs.length > 0) {
-        await toggleCloudFoldersAndNotify(toggleCloudFolderArgs);
-        focusMainWindow();
-        return;
-      }
-
       if (removeCloudFolderArgs.length > 0) {
         await removeCloudFoldersAndNotify(removeCloudFolderArgs);
         focusMainWindow();
@@ -2973,7 +3216,6 @@ app.whenReady().then(async () => {
 
   const startupCloudFolderArgs = getCloudFolderArgs();
   const startupRemoveCloudFolderArgs = getRemoveCloudFolderArgs();
-  const startupToggleCloudFolderArgs = getToggleCloudFolderArgs();
 
   ipcMain.handle('app:get-state', () => {
     refreshPairingState()
@@ -3117,6 +3359,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('remote:browse', (_event, folderId, relativePath) => browseRemoteFolder(folderId, relativePath));
   ipcMain.handle('remote:download', (_event, folderId, relativePath) => downloadRemoteFile(folderId, relativePath));
   ipcMain.handle('remote:delete', (_event, folderId, relativePath) => deleteRemoteEntry(folderId, relativePath));
+  ipcMain.handle('remote:share', (_event, folderId, relativePath, type, name) => createShareLink(folderId, relativePath, type, name));
+  ipcMain.handle('clipboard:write-text', (_event, text) => {
+    clipboard.writeText(String(text || ''));
+    return { ok: true };
+  });
   ipcMain.handle('updates:check', () => checkForUpdates());
   ipcMain.handle('updates:download', () => downloadUpdate());
   ipcMain.handle('updates:install', () => installUpdate());
@@ -3131,11 +3378,7 @@ app.whenReady().then(async () => {
   recoverInterruptedSyncJobs();
   startSyncProcessor();
   createWindow();
-
-  if (startupToggleCloudFolderArgs.length > 0) {
-    await toggleCloudFoldersAndNotify(startupToggleCloudFolderArgs);
-    focusMainWindow();
-  }
+  startCommandQueue();
 
   if (startupRemoveCloudFolderArgs.length > 0) {
     await removeCloudFoldersAndNotify(startupRemoveCloudFolderArgs);
@@ -3165,6 +3408,10 @@ app.on('window-all-closed', () => {
 
   if (syncTimer) {
     clearInterval(syncTimer);
+  }
+
+  if (commandTimer) {
+    clearInterval(commandTimer);
   }
 
   if (process.platform !== 'darwin') {

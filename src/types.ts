@@ -111,6 +111,18 @@ export type RemoteDeleteResult = {
   }
 }
 
+export type ShareLinkResult = {
+  ok: boolean
+  token: string
+  url: string
+  name: string
+  type: 'file' | 'directory'
+  relativePath: string
+  expiresAt: string
+  maxDownloads: number
+  downloadCount: number
+}
+
 export type ActivityItem = {
   id: string
   type: 'upload' | 'pin' | 'relay' | 'pause' | 'link' | 'download' | 'remove' | 'vault'
@@ -124,7 +136,7 @@ export type SyncFile = {
   relativePath: string
   sizeBytes: number
   modifiedAt: string
-  status: 'pending' | 'done' | 'error'
+  status: 'pending' | 'uploading' | 'done' | 'error'
   attempts: number
   uploadedBytes: number
   error: string
@@ -183,6 +195,8 @@ export type NubemDriveApi = {
   browseRemoteFolder: (folderId: string, relativePath: string) => Promise<RemoteListing>
   downloadRemoteFile: (folderId: string, relativePath: string) => Promise<RemoteDownloadResult>
   deleteRemoteEntry: (folderId: string, relativePath: string) => Promise<RemoteDeleteResult>
+  createShareLink: (folderId: string, relativePath: string, type: RemoteEntry['type'], name: string) => Promise<ShareLinkResult>
+  copyText: (text: string) => Promise<{ ok: boolean }>
   checkForUpdates: () => Promise<AppState>
   downloadUpdate: () => Promise<AppState>
   installUpdate: () => Promise<AppState>
