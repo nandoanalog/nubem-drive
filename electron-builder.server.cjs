@@ -4,6 +4,7 @@ module.exports = {
   ...common,
   appId: 'org.nubem.server',
   productName: 'Nubem Server',
+  icon: 'build/icon.png',
   extraMetadata: {
     ...common.extraMetadata,
     name: 'nubem-server',
@@ -11,8 +12,13 @@ module.exports = {
     nubemFlavor: 'server',
     description: 'Private Nubem storage server.',
   },
+  extraResources: [
+    { from: 'build/icon.ico', to: 'icon.ico' },
+    { from: 'build/icon.png', to: 'icon.png' },
+  ],
   linux: {
     target: ['deb'],
+    icon: 'build/icon.png',
     category: 'Utility',
     maintainer: 'Nando <nando@nubem.org>',
     executableName: 'nubem-server',
