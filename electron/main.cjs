@@ -67,6 +67,7 @@ const syncUploadConcurrency = Math.max(
 );
 
 const now = () => new Date().toISOString();
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const writeJsonFileAtomic = (file, value) => {
   const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -1527,14 +1528,9 @@ const waitForRelayRequest = async (requestId, timeoutMs = 120000) => {
 
 const waitForVaultRequest = async (folderId, requestId, timeoutMs = 120000) => {
   const startedAt = Date.now();
-  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
 
   while (Date.now() - startedAt < timeoutMs) {
-    const payload = await relayRequest(relayUrl, '/api/drive/requests/result', {
-      pairId,
-      token,
-      requestId,
-    });
+    const payload = await getVaultRequestStatus(folderId, requestId);
 
     if (payload.status === 'ready') {
       return payload.result;
@@ -1544,10 +1540,19 @@ const waitForVaultRequest = async (folderId, requestId, timeoutMs = 120000) => {
       throw new Error(payload.error || 'Remote request failed');
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await delay(1200);
   }
 
   throw new Error('Storage PC did not respond');
+};
+
+const getVaultRequestStatus = async (folderId, requestId) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  return relayRequest(relayUrl, '/api/drive/requests/result', {
+    pairId,
+    token,
+    requestId,
+  });
 };
 
 const completeRelayRequest = async (folderId, requestId, result, error) => {
@@ -1599,6 +1604,72 @@ const downloadRelayChunk = async (folderId, requestId, index) => {
     requestId,
     index,
   });
+};
+
+const isChunkMissingError = (error) => String(error?.message || error || '').includes('Chunk missing');
+
+const suggestedDownloadFileName = (relativePath = '') => {
+  const safeRelativePath = normalizeRemoteRelativePath(relativePath);
+  return safeRelativePath.split('/').filter(Boolean).pop() || 'download';
+};
+
+const writeStreamBuffer = (stream, buffer) =>
+  new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stream.off('drain', onDrain);
+      stream.off('error', onError);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    if (stream.write(buffer)) {
+      resolve();
+      return;
+    }
+
+    stream.once('drain', onDrain);
+    stream.once('error', onError);
+  });
+
+const waitForProgressiveDownload = async (folderId, requestId, stream, timeoutMs = 15 * 60 * 1000) => {
+  const startedAt = Date.now();
+  let nextChunk = 0;
+  let result = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const chunk = await downloadRelayChunk(folderId, requestId, nextChunk);
+      await writeStreamBuffer(stream, Buffer.from(chunk.data, 'base64'));
+      nextChunk += 1;
+      continue;
+    } catch (error) {
+      if (!isChunkMissingError(error)) {
+        throw error;
+      }
+    }
+
+    const status = await getVaultRequestStatus(folderId, requestId);
+    if (status.status === 'error') {
+      throw new Error(status.error || 'Remote request failed');
+    }
+
+    if (status.status === 'ready') {
+      result = status.result || {};
+      if (nextChunk >= Number(result.chunkCount || 0)) {
+        return result;
+      }
+    }
+
+    await delay(200);
+  }
+
+  throw new Error('Storage PC did not respond');
 };
 
 const sendFileToRelay = async (requestId, folderId, relativePath) => {
@@ -1766,31 +1837,46 @@ const downloadRemoteFile = async (folderId, relativePath = '') => {
     return { ok: true, filePath: target };
   }
 
-  const requestId = await createRelayRequest('download', folderId, relativePath);
-  const result = await waitForVaultRequest(folderId, requestId, 15 * 60 * 1000);
   const saveResult = await dialog.showSaveDialog(mainWindow, {
     title: `Save from ${appProductName}`,
-    defaultPath: result.fileName,
+    defaultPath: suggestedDownloadFileName(relativePath),
   });
 
   if (saveResult.canceled || !saveResult.filePath) {
     return { ok: false };
   }
 
-  const stream = fs.createWriteStream(saveResult.filePath);
+  const requestId = await createRelayRequest('download', folderId, relativePath);
+  const tmpTarget = `${saveResult.filePath}.nubem-part-${requestId}`;
+  const stream = fs.createWriteStream(tmpTarget);
+  let result = null;
+  let downloadError = null;
 
   try {
-    for (let index = 0; index < result.chunkCount; index += 1) {
-      const chunk = await downloadRelayChunk(folderId, requestId, index);
-      stream.write(Buffer.from(chunk.data, 'base64'));
-    }
+    result = await waitForProgressiveDownload(folderId, requestId, stream, 15 * 60 * 1000);
+  } catch (error) {
+    downloadError = error;
   } finally {
     await new Promise((resolve, reject) => {
       stream.end((error) => (error ? reject(error) : resolve()));
     });
   }
 
-  writeState(addActivity(ensureState(), 'download', result.fileName, result.sizeLabel || 'Downloaded'));
+  if (downloadError) {
+    fs.rmSync(tmpTarget, { force: true });
+    throw downloadError;
+  }
+
+  fs.rmSync(saveResult.filePath, { force: true });
+  fs.renameSync(tmpTarget, saveResult.filePath);
+  if (result?.modifiedAt) {
+    const modifiedAt = new Date(result.modifiedAt);
+    if (Number.isFinite(modifiedAt.getTime())) {
+      fs.utimesSync(saveResult.filePath, modifiedAt, modifiedAt);
+    }
+  }
+
+  writeState(addActivity(ensureState(), 'download', result?.fileName || suggestedDownloadFileName(relativePath), result?.sizeLabel || 'Downloaded'));
   return { ok: true, filePath: saveResult.filePath };
 };
 
