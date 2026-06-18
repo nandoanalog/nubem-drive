@@ -152,6 +152,21 @@ const cancelDuplicateUploads = (pair, nextRequest) => {
   }
 };
 
+const reusableUploadRequest = (pair, nextRequest) => {
+  if (nextRequest.type !== 'upload') return null;
+
+  return Object.values(pair.requests || {}).find(
+    (request) =>
+      request.type === 'upload' &&
+      request.status === 'uploading' &&
+      request.requesterId === nextRequest.requesterId &&
+      request.relativePath === nextRequest.relativePath &&
+      Number(request.totalBytes || 0) === Number(nextRequest.totalBytes || 0) &&
+      Number(request.chunkCount || 0) === Number(nextRequest.chunkCount || 0) &&
+      String(request.modifiedAt || '') === String(nextRequest.modifiedAt || '')
+  );
+};
+
 const prunePairs = (state) => {
   const cutoff = Date.now() - requestTtlMs;
   const uploadCutoff = Date.now() - uploadStallMs;
@@ -903,6 +918,13 @@ const handlers = {
     };
 
     pair.requests = pair.requests || {};
+    const existingUpload = reusableUploadRequest(pair, request);
+    if (existingUpload) {
+      existingUpload.updatedAt = now();
+      writeState(prunePairs(state));
+      return { ok: true, requestId: existingUpload.id, reused: true };
+    }
+
     cancelDuplicateUploads(pair, request);
     pair.requests[requestId] = request;
     writeState(prunePairs(state));
