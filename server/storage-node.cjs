@@ -7,6 +7,8 @@ const path = require('node:path');
 
 const defaultRelayUrl = 'https://drive.nubem.org';
 const pollIntervalMs = Number(process.env.NUBEM_STORAGE_POLL_MS || 5000);
+const activePollIntervalMs = Number(process.env.NUBEM_STORAGE_ACTIVE_POLL_MS || 1000);
+const immediatePollIntervalMs = Number(process.env.NUBEM_STORAGE_IMMEDIATE_POLL_MS || 250);
 const chunkSize = 4 * 1024 * 1024;
 const defaultRelayTimeoutMs = 20 * 1000;
 const relayChunkReadTimeoutMs = 90 * 1000;
@@ -820,6 +822,18 @@ const releaseRelayRequestLock = (requestId) => {
   fs.rmSync(path.join(relayLockRoot(), requestId), { recursive: true, force: true });
 };
 
+const relayWorkHasStorageWork = (work) =>
+  Boolean(work && (work.hasStorageWork || Number(work.waitingForStorage || 0) > 0));
+
+const relayWorkHasFileWork = (work) =>
+  Boolean(
+    work &&
+      (work.hasFileWork ||
+        Number(work.clientUploading || 0) > 0 ||
+        Number(work.waitingForStorage || 0) > 0 ||
+        Number(work.serverReady || 0) > 0)
+  );
+
 const decodeDeleteRequestPath = (request) => {
   if (request.type === 'delete') {
     return request.relativePath;
@@ -993,48 +1007,71 @@ const handlePendingRelayRequests = async (folder) => {
   const state = ensureState();
   const currentFolder = state.folders.find((item) => item.id === folder.id);
   if (!currentFolder || currentFolder.vaultRole === 'client' || !currentFolder.pairId || !currentFolder.token) {
-    return;
+    return { handled: 0, more: false, work: null };
   }
 
-  const payload = await relayRequest(currentFolder.relayUrl || defaultRelayUrl, '/api/drive/requests/poll', {
-    pairId: currentFolder.pairId,
-    token: currentFolder.token,
-  });
+  let handled = 0;
+  let more = false;
+  let work = null;
 
-  for (const request of payload.requests || []) {
-    if (!acquireRelayRequestLock(request.id)) {
-      continue;
+  for (let batch = 0; batch < 8; batch += 1) {
+    const payload = await relayRequest(currentFolder.relayUrl || defaultRelayUrl, '/api/drive/requests/poll', {
+      pairId: currentFolder.pairId,
+      token: currentFolder.token,
+    });
+    const requests = Array.isArray(payload.requests) ? payload.requests : [];
+    work = payload.work || work;
+    more = Boolean(payload.more);
+
+    if (requests.length === 0) {
+      break;
     }
 
-    try {
-      const deleteRelativePath = decodeDeleteRequestPath(request);
-      let result;
-      if (deleteRelativePath) {
-        result = deleteCloudPath(ensureState(), currentFolder.id, deleteRelativePath);
-      } else if (request.type === 'download') {
-        result = await sendFileToRelay(state, currentFolder, request);
-      } else if (request.type === 'upload') {
-        result = await receiveFileFromRelay(state, currentFolder, request);
-      } else if (request.type === 'delete') {
-        result = deleteCloudPath(state, currentFolder.id, request.relativePath);
-      } else if (request.type === 'stat') {
-        result = statCloudPath(state, currentFolder.id, request.relativePath);
-      } else {
-        result = listCloudFolder(state, currentFolder.id, request.relativePath);
+    let processed = 0;
+    for (const request of requests) {
+      if (!acquireRelayRequestLock(request.id)) {
+        continue;
       }
 
-      await completeRelayRequest(currentFolder, request.id, result);
-    } catch (error) {
-      await completeRelayRequest(currentFolder, request.id, null, error instanceof Error ? error.message : 'Request failed');
-    } finally {
-      releaseRelayRequestLock(request.id);
+      processed += 1;
+      try {
+        const deleteRelativePath = decodeDeleteRequestPath(request);
+        let result;
+        if (deleteRelativePath) {
+          result = deleteCloudPath(ensureState(), currentFolder.id, deleteRelativePath);
+        } else if (request.type === 'download') {
+          result = await sendFileToRelay(state, currentFolder, request);
+        } else if (request.type === 'upload') {
+          result = await receiveFileFromRelay(state, currentFolder, request);
+        } else if (request.type === 'delete') {
+          result = deleteCloudPath(state, currentFolder.id, request.relativePath);
+        } else if (request.type === 'stat') {
+          result = statCloudPath(state, currentFolder.id, request.relativePath);
+        } else {
+          result = listCloudFolder(state, currentFolder.id, request.relativePath);
+        }
+
+        await completeRelayRequest(currentFolder, request.id, result);
+      } catch (error) {
+        await completeRelayRequest(currentFolder, request.id, null, error instanceof Error ? error.message : 'Request failed');
+      } finally {
+        releaseRelayRequestLock(request.id);
+      }
+    }
+
+    handled += processed;
+    if (!more || processed === 0) {
+      break;
     }
   }
+
+  return { handled, more, work };
 };
 
 const tick = async () => {
   let state = ensureState();
   const folders = state.folders.filter((folder) => folder.vaultRole !== 'client' && folder.status !== 'paused');
+  let nextDelayMs = pollIntervalMs;
 
   for (const folder of folders) {
     try {
@@ -1051,7 +1088,18 @@ const tick = async () => {
       });
 
       state = applyVaultPayloadToFolder(ensureState(), current.id, payload);
-      await handlePendingRelayRequests(current);
+      if (relayWorkHasFileWork(payload.work)) {
+        nextDelayMs = Math.min(nextDelayMs, activePollIntervalMs);
+      }
+
+      if (!payload.work || relayWorkHasStorageWork(payload.work)) {
+        const result = await handlePendingRelayRequests(current);
+        if (result.handled > 0 || result.more || relayWorkHasStorageWork(result.work)) {
+          nextDelayMs = Math.min(nextDelayMs, immediatePollIntervalMs);
+        } else if (relayWorkHasFileWork(result.work)) {
+          nextDelayMs = Math.min(nextDelayMs, activePollIntervalMs);
+        }
+      }
     } catch (error) {
       state = ensureState();
       writeState({
@@ -1063,17 +1111,28 @@ const tick = async () => {
       console.error(`[${now()}] ${folder.name}: ${error instanceof Error ? error.message : 'Storage error'}`);
     }
   }
+
+  return nextDelayMs;
 };
 
 const main = async () => {
   console.log(storageTitle());
   console.log(`state=${dataFile()}`);
-  console.log(`poll=${pollIntervalMs}ms`);
+  console.log(`poll=${pollIntervalMs}ms active=${activePollIntervalMs}ms immediate=${immediatePollIntervalMs}ms`);
 
-  await tick();
-  setInterval(() => {
-    tick().catch((error) => console.error(`[${now()}] ${error instanceof Error ? error.message : 'Storage error'}`));
-  }, pollIntervalMs);
+  const schedule = (delayMs) => {
+    setTimeout(async () => {
+      try {
+        const nextDelayMs = await tick();
+        schedule(nextDelayMs);
+      } catch (error) {
+        console.error(`[${now()}] ${error instanceof Error ? error.message : 'Storage error'}`);
+        schedule(pollIntervalMs);
+      }
+    }, Math.max(100, delayMs));
+  };
+
+  schedule(await tick());
 };
 
 main().catch((error) => {

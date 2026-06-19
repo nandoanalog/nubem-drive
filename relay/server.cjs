@@ -348,6 +348,30 @@ const publicDevices = (pair) => {
   });
 };
 
+const storageWorkForPair = (pair) => {
+  const allRequests = Object.values(pair.requests || {});
+  const fileRequests = allRequests.filter((request) => ['download', 'upload'].includes(request.type));
+  const pendingRequests = allRequests.filter((request) => request.status === 'pending').length;
+  const clientUploading = fileRequests.filter((request) => request.type === 'upload' && request.status === 'uploading').length;
+  const waitingForStorage = fileRequests.filter((request) => request.status === 'pending').length;
+  const serverReady = fileRequests.filter((request) => request.type === 'download' && request.status === 'ready').length;
+  const done = fileRequests.filter((request) => request.status === 'ready').length;
+  const errored = fileRequests.filter((request) => request.status === 'error').length;
+
+  return {
+    hasFileWork: clientUploading > 0 || waitingForStorage > 0 || serverReady > 0,
+    hasStorageWork: pendingRequests > 0,
+    pendingRequests,
+    clientUploading,
+    waitingForStorage,
+    serverReady,
+    done,
+    errored,
+    nextPollMs: pendingRequests > 0 ? 250 : clientUploading > 0 || serverReady > 0 ? 1000 : 5000,
+    updatedAt: now(),
+  };
+};
+
 const pairPayload = (pair, extra = {}) => ({
   ok: true,
   pairId: pair.id,
@@ -358,6 +382,7 @@ const pairPayload = (pair, extra = {}) => ({
   devices: publicDevices(pair),
   folders: pairFoldersForToken(pair, extra.token),
   clientVaults: pairClientVaultsForToken(pair, extra.token),
+  work: storageWorkForPair(pair),
   ...extra,
 });
 
@@ -1421,12 +1446,15 @@ const handlers = {
       return { status: 401, payload: { ok: false, error: 'Storage token required' } };
     }
 
-    const requests = Object.values(pair.requests || {})
-      .filter((request) => request.status === 'pending')
-      .slice(0, 8)
-      .map(publicRequest);
+    const pendingRequests = Object.values(pair.requests || {}).filter((request) => request.status === 'pending');
+    const requests = pendingRequests.slice(0, 8).map(publicRequest);
 
-    return { ok: true, requests };
+    return {
+      ok: true,
+      requests,
+      more: pendingRequests.length > requests.length,
+      work: storageWorkForPair(pair),
+    };
   },
 
   'POST /api/drive/requests/complete': async (body) => {
