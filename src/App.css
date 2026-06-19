@@ -518,6 +518,10 @@ button:disabled {
   color: #8a6f24;
 }
 
+.route-icon.waiting-client {
+  color: #8a6f24;
+}
+
 .route-main {
   display: grid;
   min-width: 0;

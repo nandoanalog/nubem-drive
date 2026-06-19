@@ -10,6 +10,7 @@ const pairCodeTtlMs = 5 * 60 * 1000;
 const onlineWindowMs = 35 * 1000;
 const requestTtlMs = 24 * 60 * 60 * 1000;
 const completedRequestTtlMs = 30 * 60 * 1000;
+const metadataRequestTtlMs = 2 * 60 * 1000;
 const uploadStallMs = 10 * 60 * 1000;
 const shareTtlMs = 24 * 60 * 60 * 1000;
 const shareMaxDownloads = 3;
@@ -226,10 +227,11 @@ const prunePairs = (state) => {
 
     for (const [requestId, request] of Object.entries(pair.requests || {})) {
       const updatedAt = new Date(request.updatedAt || request.createdAt || 0).getTime();
+      const completedTtlMs = ['list', 'stat'].includes(request.type) ? metadataRequestTtlMs : completedRequestTtlMs;
       const completedExpired =
         ['ready', 'error'].includes(request.status) &&
         Number.isFinite(updatedAt) &&
-        Date.now() - updatedAt > completedRequestTtlMs;
+        Date.now() - updatedAt > completedTtlMs;
 
       if (new Date(request.createdAt || 0).getTime() < cutoff || completedExpired) {
         delete pair.requests[requestId];
@@ -920,37 +922,43 @@ const queueStatsItem = (pair, request) => {
   const downloadedBytes = Math.max(0, Number(request.downloadedBytes || requestChunkBytes(request, 'readChunks') || 0));
   const totalBytes = Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0));
   let stage = 'waiting-server';
-  let stageLabel = 'Waiting for server poll';
+  let stageLabel = 'Waiting for server';
   let transferredBytes = 0;
 
   if (request.type === 'upload') {
     if (request.status === 'uploading') {
       stage = 'client-to-vps';
-      stageLabel = 'Client -> VPS';
+      stageLabel = 'Client uploading';
       transferredBytes = uploadedBytes;
     } else if (request.status === 'pending' && downloadedBytes > 0) {
       stage = 'vps-to-server';
-      stageLabel = 'VPS -> server';
+      stageLabel = 'Server receiving';
       transferredBytes = downloadedBytes;
     } else if (request.status === 'ready') {
       stage = 'ready';
-      stageLabel = 'Done';
+      stageLabel = 'Done, cleaning soon';
       transferredBytes = totalBytes || uploadedBytes;
     } else {
       transferredBytes = uploadedBytes || totalBytes;
     }
-  } else if (request.status === 'pending' && uploadedBytes > 0) {
-    stage = 'server-to-vps';
-    stageLabel = 'Server -> VPS';
-    transferredBytes = uploadedBytes;
-  } else if (request.status === 'ready' && downloadedBytes > 0) {
-    stage = 'vps-to-client';
-    stageLabel = 'VPS -> client';
-    transferredBytes = downloadedBytes;
-  } else if (request.status === 'ready') {
-    stage = 'ready';
-    stageLabel = 'Ready on VPS';
-    transferredBytes = totalBytes || uploadedBytes;
+  } else if (request.type === 'download') {
+    if (request.status === 'pending' && uploadedBytes > 0) {
+      stage = 'server-to-vps';
+      stageLabel = 'Server uploading';
+      transferredBytes = uploadedBytes;
+    } else if (request.status === 'ready' && totalBytes > 0 && downloadedBytes >= totalBytes) {
+      stage = 'ready';
+      stageLabel = 'Done, cleaning soon';
+      transferredBytes = totalBytes;
+    } else if (request.status === 'ready' && downloadedBytes > 0) {
+      stage = 'vps-to-client';
+      stageLabel = 'Client receiving';
+      transferredBytes = downloadedBytes;
+    } else if (request.status === 'ready') {
+      stage = 'waiting-client';
+      stageLabel = 'Waiting for client';
+      transferredBytes = downloadedBytes;
+    }
   }
 
   return {
@@ -974,8 +982,19 @@ const queueStatsItem = (pair, request) => {
 const queueStats = (pairs) => {
   let files = 0;
   let bytes = 0;
+  let doneFiles = 0;
+  let doneBytes = 0;
   let oldestAt = '';
   let oldestTime = Number.POSITIVE_INFINITY;
+  const stages = {
+    clientToVps: 0,
+    waitingServer: 0,
+    serverToVps: 0,
+    vpsToServer: 0,
+    waitingClient: 0,
+    vpsToClient: 0,
+    done: 0,
+  };
   const items = [];
 
   for (const pair of pairs) {
@@ -983,12 +1002,30 @@ const queueStats = (pairs) => {
       if (!['pending', 'uploading', 'ready'].includes(request.status)) continue;
       if (!['download', 'upload'].includes(request.type)) continue;
 
-      files += 1;
-      bytes += Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0));
-      items.push(queueStatsItem(pair, request));
+      const item = queueStatsItem(pair, request);
+      const sizeBytes = Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0));
+      const isDone = item.stage === 'ready';
+
+      if (isDone) {
+        doneFiles += 1;
+        doneBytes += sizeBytes;
+        stages.done += 1;
+      } else {
+        files += 1;
+        bytes += sizeBytes;
+
+        if (item.stage === 'client-to-vps') stages.clientToVps += 1;
+        else if (item.stage === 'server-to-vps') stages.serverToVps += 1;
+        else if (item.stage === 'vps-to-server') stages.vpsToServer += 1;
+        else if (item.stage === 'waiting-client') stages.waitingClient += 1;
+        else if (item.stage === 'vps-to-client') stages.vpsToClient += 1;
+        else stages.waitingServer += 1;
+      }
+
+      items.push(item);
 
       const createdAt = new Date(request.createdAt || request.updatedAt || 0).getTime();
-      if (Number.isFinite(createdAt) && createdAt < oldestTime) {
+      if (!isDone && Number.isFinite(createdAt) && createdAt < oldestTime) {
         oldestTime = createdAt;
         oldestAt = request.createdAt || request.updatedAt || '';
       }
@@ -996,13 +1033,31 @@ const queueStats = (pairs) => {
   }
 
   items.sort((left, right) => {
-    const statusOrder = { uploading: 0, pending: 1, ready: 2 };
-    const statusDelta = statusOrder[left.status] - statusOrder[right.status];
-    if (statusDelta !== 0) return statusDelta;
+    const stageOrder = {
+      'client-to-vps': 0,
+      'vps-to-server': 1,
+      'server-to-vps': 2,
+      'vps-to-client': 3,
+      'waiting-server': 4,
+      'waiting-client': 5,
+      ready: 6,
+    };
+    const stageDelta = stageOrder[left.stage] - stageOrder[right.stage];
+    if (stageDelta !== 0) return stageDelta;
     return new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime();
   });
 
-  return { files, bytes, oldestAt, items: items.slice(0, 12) };
+  return {
+    files,
+    bytes,
+    doneFiles,
+    doneBytes,
+    totalFiles: files + doneFiles,
+    totalBytes: bytes + doneBytes,
+    oldestAt,
+    stages,
+    items: items.slice(0, 12),
+  };
 };
 
 const vpsStatsPayload = (state, credentials = []) => {

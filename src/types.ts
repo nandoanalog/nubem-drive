@@ -157,7 +157,7 @@ export type VpsQueueItem = {
   id: string
   type: 'upload' | 'download'
   status: 'uploading' | 'pending' | 'ready'
-  stage: 'client-to-vps' | 'waiting-server' | 'server-to-vps' | 'vps-to-server' | 'vps-to-client' | 'ready'
+  stage: 'client-to-vps' | 'waiting-server' | 'server-to-vps' | 'vps-to-server' | 'waiting-client' | 'vps-to-client' | 'ready'
   stageLabel: string
   vaultName: string
   clientName: string
@@ -179,7 +179,20 @@ export type VpsStats = {
   queue: {
     files: number
     bytes: number
+    doneFiles: number
+    doneBytes: number
+    totalFiles: number
+    totalBytes: number
     oldestAt: string
+    stages: {
+      clientToVps: number
+      waitingServer: number
+      serverToVps: number
+      vpsToServer: number
+      waitingClient: number
+      vpsToClient: number
+      done: number
+    }
     items: VpsQueueItem[]
   }
   storage: {

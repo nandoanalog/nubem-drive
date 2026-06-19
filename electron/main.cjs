@@ -209,7 +209,20 @@ const emptyVpsStats = () => ({
   queue: {
     files: 0,
     bytes: 0,
+    doneFiles: 0,
+    doneBytes: 0,
+    totalFiles: 0,
+    totalBytes: 0,
     oldestAt: '',
+    stages: {
+      clientToVps: 0,
+      waitingServer: 0,
+      serverToVps: 0,
+      vpsToServer: 0,
+      waitingClient: 0,
+      vpsToClient: 0,
+      done: 0,
+    },
     items: [],
   },
   storage: {
@@ -232,7 +245,7 @@ const normalizeVpsStats = (stats = {}) => {
           id: String(item?.id || ''),
           type: item?.type === 'download' ? 'download' : 'upload',
           status: ['uploading', 'pending', 'ready'].includes(item?.status) ? item.status : 'pending',
-          stage: ['client-to-vps', 'waiting-server', 'server-to-vps', 'vps-to-server', 'vps-to-client', 'ready'].includes(item?.stage)
+          stage: ['client-to-vps', 'waiting-server', 'server-to-vps', 'vps-to-server', 'waiting-client', 'vps-to-client', 'ready'].includes(item?.stage)
             ? item.stage
             : 'waiting-server',
           stageLabel: String(item?.stageLabel || ''),
@@ -256,6 +269,11 @@ const normalizeVpsStats = (stats = {}) => {
     : totalBytes > 0
       ? Math.round((usedBytes / totalBytes) * 100)
       : 0;
+  const stages = queue.stages && typeof queue.stages === 'object' ? queue.stages : {};
+  const queueFiles = Number.isFinite(queue.files) ? Math.max(0, queue.files) : 0;
+  const queueBytes = Number.isFinite(queue.bytes) ? Math.max(0, queue.bytes) : 0;
+  const doneFiles = Number.isFinite(queue.doneFiles) ? Math.max(0, queue.doneFiles) : 0;
+  const doneBytes = Number.isFinite(queue.doneBytes) ? Math.max(0, queue.doneBytes) : 0;
 
   return {
     updatedAt: String(stats.updatedAt || fresh.updatedAt),
@@ -268,9 +286,22 @@ const normalizeVpsStats = (stats = {}) => {
         : 0,
     },
     queue: {
-      files: Number.isFinite(queue.files) ? Math.max(0, queue.files) : 0,
-      bytes: Number.isFinite(queue.bytes) ? Math.max(0, queue.bytes) : 0,
+      files: queueFiles,
+      bytes: queueBytes,
+      doneFiles,
+      doneBytes,
+      totalFiles: Number.isFinite(queue.totalFiles) ? Math.max(0, queue.totalFiles) : queueFiles + doneFiles,
+      totalBytes: Number.isFinite(queue.totalBytes) ? Math.max(0, queue.totalBytes) : queueBytes + doneBytes,
       oldestAt: String(queue.oldestAt || ''),
+      stages: {
+        clientToVps: Number.isFinite(stages.clientToVps) ? Math.max(0, stages.clientToVps) : 0,
+        waitingServer: Number.isFinite(stages.waitingServer) ? Math.max(0, stages.waitingServer) : 0,
+        serverToVps: Number.isFinite(stages.serverToVps) ? Math.max(0, stages.serverToVps) : 0,
+        vpsToServer: Number.isFinite(stages.vpsToServer) ? Math.max(0, stages.vpsToServer) : 0,
+        waitingClient: Number.isFinite(stages.waitingClient) ? Math.max(0, stages.waitingClient) : 0,
+        vpsToClient: Number.isFinite(stages.vpsToClient) ? Math.max(0, stages.vpsToClient) : 0,
+        done: Number.isFinite(stages.done) ? Math.max(0, stages.done) : 0,
+      },
       items: queueItems,
     },
     storage: {

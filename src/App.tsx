@@ -96,7 +96,20 @@ const demoState: AppState = {
     queue: {
       files: 0,
       bytes: 0,
+      doneFiles: 0,
+      doneBytes: 0,
+      totalFiles: 0,
+      totalBytes: 0,
       oldestAt: '',
+      stages: {
+        clientToVps: 0,
+        waitingServer: 0,
+        serverToVps: 0,
+        vpsToServer: 0,
+        waitingClient: 0,
+        vpsToClient: 0,
+        done: 0,
+      },
       items: [],
     },
     storage: {
@@ -504,6 +517,11 @@ function formatRate(bytesPerSecond: number) {
 }
 
 function currentVpsStats(state: AppState): VpsStats {
+  const queueStages = state.vpsStats?.queue?.stages
+  const queueFiles = Math.max(0, state.vpsStats?.queue?.files || 0)
+  const queueBytes = Math.max(0, state.vpsStats?.queue?.bytes || 0)
+  const doneFiles = Math.max(0, state.vpsStats?.queue?.doneFiles || 0)
+  const doneBytes = Math.max(0, state.vpsStats?.queue?.doneBytes || 0)
   const queueItems = Array.isArray(state.vpsStats?.queue?.items)
     ? state.vpsStats.queue.items
         .slice(0, 12)
@@ -533,9 +551,22 @@ function currentVpsStats(state: AppState): VpsStats {
       outboundBytesPerSecond: Math.max(0, state.vpsStats?.traffic?.outboundBytesPerSecond || 0),
     },
     queue: {
-      files: Math.max(0, state.vpsStats?.queue?.files || 0),
-      bytes: Math.max(0, state.vpsStats?.queue?.bytes || 0),
+      files: queueFiles,
+      bytes: queueBytes,
+      doneFiles,
+      doneBytes,
+      totalFiles: Math.max(0, state.vpsStats?.queue?.totalFiles || queueFiles + doneFiles),
+      totalBytes: Math.max(0, state.vpsStats?.queue?.totalBytes || queueBytes + doneBytes),
       oldestAt: state.vpsStats?.queue?.oldestAt || '',
+      stages: {
+        clientToVps: Math.max(0, queueStages?.clientToVps || 0),
+        waitingServer: Math.max(0, queueStages?.waitingServer || 0),
+        serverToVps: Math.max(0, queueStages?.serverToVps || 0),
+        vpsToServer: Math.max(0, queueStages?.vpsToServer || 0),
+        waitingClient: Math.max(0, queueStages?.waitingClient || 0),
+        vpsToClient: Math.max(0, queueStages?.vpsToClient || 0),
+        done: Math.max(0, queueStages?.done || 0),
+      },
       items: queueItems,
     },
     storage: {
@@ -1297,7 +1328,7 @@ function transferPipelineRow(transfer: TrafficTransfer): PipelineRow {
   return {
     id: transfer.id,
     stage,
-    stageLabel: stage === 'vps-to-server' ? 'VPS -> server' : 'Server -> VPS',
+    stageLabel: stage === 'vps-to-server' ? 'Server receiving' : 'Server uploading',
     status: 'moving',
     clientName: transfer.clientName,
     vaultName: transfer.vaultName,
@@ -1323,24 +1354,26 @@ function queuePipelineRow(item: VpsQueueItem): PipelineRow {
     transferredBytes: item.transferredBytes,
     totalBytes: item.totalBytes || item.bytes,
     rateBytesPerSecond: 0,
-    active: item.stage !== 'waiting-server' && item.stage !== 'ready',
+    active: !item.stage.startsWith('waiting') && item.stage !== 'ready',
   }
 }
 
 function stageLabel(stage: string) {
   switch (stage) {
     case 'client-to-vps':
-      return 'Client -> VPS'
+      return 'Client uploading'
     case 'server-to-vps':
-      return 'Server -> VPS'
+      return 'Server uploading'
     case 'vps-to-server':
-      return 'VPS -> server'
+      return 'Server receiving'
+    case 'waiting-client':
+      return 'Waiting for client'
     case 'vps-to-client':
-      return 'VPS -> client'
+      return 'Client receiving'
     case 'ready':
-      return 'Ready'
+      return 'Done, cleaning soon'
     default:
-      return 'Waiting for server poll'
+      return 'Waiting for server'
   }
 }
 
@@ -1355,6 +1388,14 @@ function rowPercent(row: PipelineRow) {
   })
 }
 
+function routePillLabel(row: PipelineRow) {
+  if (row.rateBytesPerSecond > 0) return formatRate(row.rateBytesPerSecond)
+  if (row.stage === 'ready') return 'done'
+  if (row.stage.startsWith('waiting')) return 'waiting'
+  if (row.status === 'uploading') return 'uploading'
+  return 'moving'
+}
+
 function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: TrafficTransfer[] }) {
   const transferRows = transfers.slice(0, 4).map(transferPipelineRow)
   const activeIds = new Set(transferRows.map((transfer) => transfer.id))
@@ -1364,6 +1405,17 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
     .map(queuePipelineRow)
   const rows = [...transferRows, ...queueRows].slice(0, 8)
   const movingCount = rows.filter((row) => row.active).length
+  const unfinishedFiles = stats.queue.files
+  const doneFiles = stats.queue.doneFiles || stats.queue.stages.done
+  const waitingFiles = stats.queue.stages.waitingServer + stats.queue.stages.waitingClient
+  const filesDetail = doneFiles > 0 ? `${doneFiles.toLocaleString()} done` : `${formatSizeLabel(stats.queue.bytes)} staged`
+  const routeSummary = movingCount > 0
+    ? `${movingCount} moving`
+    : waitingFiles > 0
+      ? `${waitingFiles} waiting`
+      : doneFiles > 0
+        ? `${doneFiles} done`
+        : 'Nothing moving'
 
   return (
     <section className="server-vps-panel" aria-label="VPS">
@@ -1388,8 +1440,8 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
             <FileText size={17} />
           </span>
           <span className="vps-copy">
-            <strong>{stats.queue.files.toLocaleString()} files</strong>
-            <small>Queue / {formatSizeLabel(stats.queue.bytes)}</small>
+            <strong>{unfinishedFiles.toLocaleString()} unfinished</strong>
+            <small>{filesDetail}</small>
           </span>
         </div>
 
@@ -1407,15 +1459,16 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
       <div className="vps-routes" aria-label="Traffic routes">
         <div className="vps-routes-head">
           <strong>Files</strong>
-          <span>{movingCount > 0 ? `${movingCount} moving` : 'Nothing moving'}</span>
+          <span>{routeSummary}</span>
         </div>
 
         {rows.length > 0 ? (
           <div className="vps-route-list">
             {rows.map((row) => {
               const percent = rowPercent(row)
-              const isWaiting = row.stage === 'waiting-server'
+              const isWaiting = row.stage.startsWith('waiting')
               const DirectionIcon = row.stage === 'client-to-vps' || row.stage === 'vps-to-server' ? ArrowDown : ArrowUp
+              const pillLabel = routePillLabel(row)
               return (
                 <div className={`vps-route ${row.active ? 'active' : 'queued'}`} key={`${row.stage}-${row.id}`}>
                   <span className={`route-icon ${row.stage}`}>
@@ -1433,7 +1486,7 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
                   <span className={`route-progress ${isWaiting || !row.totalBytes ? 'waiting' : ''}`} title={row.totalBytes ? `${percent}%` : row.stageLabel}>
                     <span style={{ width: row.totalBytes ? `${percent}%` : '100%' }} />
                   </span>
-                  <span className={row.rateBytesPerSecond > 0 ? 'route-rate' : `queue-pill ${row.status}`}>{row.rateBytesPerSecond > 0 ? formatRate(row.rateBytesPerSecond) : row.status}</span>
+                  <span className={row.rateBytesPerSecond > 0 ? 'route-rate' : `queue-pill ${row.stage === 'ready' ? 'ready' : row.status}`}>{pillLabel}</span>
                 </div>
               )
             })}
