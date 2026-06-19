@@ -268,13 +268,16 @@ function versionTitle(state: AppState) {
   return `Installed ${state.updates.currentVersion}`
 }
 
-function formatTime(value: string) {
+function formatTime(value?: string) {
+  const time = new Date(value || '').getTime()
+  if (!Number.isFinite(time)) return '-'
+
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(value))
+  }).format(new Date(time))
 }
 
 function timeValue(value?: string) {
@@ -351,7 +354,7 @@ function progressForVaultPath(
     if (job && job.status !== 'complete') {
       const totalFiles = Math.max(job.totalFiles || 0, 0)
       const completedFiles = Math.max(job.completedFiles || 0, 0)
-      const percent = totalFiles > 0 ? Math.round((completedFiles / totalFiles) * 100) : 0
+      const percent = totalFiles > 0 ? Math.min(100, Math.max(0, Math.round((completedFiles / totalFiles) * 100))) : 0
       const isScanning = job.scanStatus !== 'complete'
       return {
         detail: isScanning
