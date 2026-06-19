@@ -1273,16 +1273,24 @@ function RemoteBrowser({
   )
 }
 
+function vaultRouteLabel(vaultName: string, clientName: string) {
+  const vault = (vaultName || 'Vault').trim()
+  const client = (clientName || 'Client').trim()
+  return vault.toLowerCase() === client.toLowerCase() ? `${vault} vault` : vault
+}
+
 function transferRoute(transfer: TrafficTransfer) {
+  const vault = vaultRouteLabel(transfer.vaultName, transfer.clientName)
   return transfer.direction === 'upload'
-    ? { from: transfer.clientName, to: transfer.vaultName, verb: 'Receiving' }
-    : { from: transfer.vaultName, to: transfer.clientName, verb: 'Sending' }
+    ? { from: transfer.clientName, to: vault, verb: 'Client to vault' }
+    : { from: vault, to: transfer.clientName, verb: 'Vault to client' }
 }
 
 function queueRoute(item: VpsQueueItem) {
+  const vault = vaultRouteLabel(item.vaultName, item.clientName)
   return item.type === 'upload'
-    ? { from: item.clientName, to: item.vaultName, verb: item.status === 'uploading' ? 'Uploading' : 'Waiting' }
-    : { from: item.vaultName, to: item.clientName, verb: item.status === 'ready' ? 'Ready' : 'Waiting' }
+    ? { from: item.clientName, to: vault, verb: item.status === 'uploading' ? 'Client to vault' : 'Waiting' }
+    : { from: vault, to: item.clientName, verb: item.status === 'ready' ? 'Vault to client' : 'Waiting' }
 }
 
 function routePath(relativePath: string, fallback: string) {
@@ -1353,7 +1361,7 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
                     <DirectionIcon size={15} />
                   </span>
                   <span className="route-main">
-                    <strong>{route.from} -&gt; {route.to}</strong>
+                    <strong>{route.from} -&gt; VPS -&gt; {route.to}</strong>
                     <small>{route.verb} / {routePath(transfer.relativePath, transfer.fileName)}</small>
                   </span>
                   <span className="route-size">{formatSizeLabel(transfer.transferredBytes)} / {formatSizeLabel(transfer.totalBytes)}</span>
@@ -1385,7 +1393,7 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
                       <DirectionIcon size={15} />
                     </span>
                     <span className="route-main">
-                      <strong>{route.from} -&gt; {route.to}</strong>
+                      <strong>{route.from} -&gt; VPS -&gt; {route.to}</strong>
                       <small>{route.verb} / {routePath(item.relativePath, item.fileName)}</small>
                     </span>
                     <span className="route-size">{formatSizeLabel(item.bytes)}</span>

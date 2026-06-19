@@ -1,18 +1,18 @@
 {
-  "latest": "0.0.80",
+  "latest": "0.0.81",
   "platforms": {
     "linux-x64": {
-      "version": "0.0.80",
-      "url": "https://drive.nubem.org/downloads/Nubem-Drive-0.0.80-amd64.deb",
-      "fileName": "Nubem-Drive-0.0.80-amd64.deb",
-      "sha256": "34faead465eb7640320fad135c51ab205cd2318d03f7b21842a3589a0dca5184",
+      "version": "0.0.81",
+      "url": "https://drive.nubem.org/downloads/Nubem-Drive-0.0.81-amd64.deb",
+      "fileName": "Nubem-Drive-0.0.81-amd64.deb",
+      "sha256": "5a1590417613dcd550dc357090f7182a51cd31f9b21bb96f18367be50ab599ee",
       "type": "deb"
     },
     "linux-x64-server": {
-      "version": "0.0.80",
-      "url": "https://drive.nubem.org/downloads/Nubem-Server-0.0.80-amd64.deb",
-      "fileName": "Nubem-Server-0.0.80-amd64.deb",
-      "sha256": "556ab713a2dcb602bda4d048f3d495d543ca4d7336aa6acc420bf0c77ca6fa0f",
+      "version": "0.0.81",
+      "url": "https://drive.nubem.org/downloads/Nubem-Server-0.0.81-amd64.deb",
+      "fileName": "Nubem-Server-0.0.81-amd64.deb",
+      "sha256": "69078e3cbb6054b6ad1ce22e1c77fc3ca6b6414dc15827f56c4806a823cabaa3",
       "type": "deb"
     },
     "win32-x64": {
