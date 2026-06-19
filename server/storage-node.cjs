@@ -16,6 +16,8 @@ const relayRequestLockTtlMs = 10 * 60 * 1000;
 const deleteRequestPrefix = '.nubem-command/delete/';
 const processingRelayRequests = new Set();
 const trafficSamples = new Map();
+const relayFeatureCacheTtlMs = 60 * 1000;
+const relayFeatureCache = new Map();
 const dataFile = () =>
   process.env.NUBEM_DRIVE_STATE ||
   path.join(os.homedir(), process.platform === 'win32' ? 'AppData/Roaming/nubem-drive/state.json' : '.config/nubem-drive/state.json');
@@ -410,6 +412,32 @@ const relayRequest = async (relayUrl, endpoint, body, timeoutMs = relayRequestTi
   }
 };
 
+const relayFeatures = async (relayUrl) => {
+  const normalizedRelayUrl = normalizeRelayUrl(relayUrl);
+  const cached = relayFeatureCache.get(normalizedRelayUrl);
+  if (cached && Date.now() - cached.checkedAt < relayFeatureCacheTtlMs) return cached.features;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(`${normalizedRelayUrl}/api/drive/health`, { signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    const features = response.ok && Array.isArray(payload.features) ? payload.features.map(String) : [];
+    relayFeatureCache.set(normalizedRelayUrl, { features, checkedAt: Date.now() });
+    return features;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const relaySupportsBinaryChunks = async (relayUrl) => {
+  const features = await relayFeatures(relayUrl);
+  return features.includes('binaryChunks');
+};
+
 const summarizeLocalFolder = (folder) => {
   let itemCount = 0;
   let totalBytes = 0;
@@ -663,6 +691,41 @@ const uploadRelayChunk = async (folder, requestId, index, data) =>
     data,
   });
 
+const uploadRelayBinaryChunk = async (folder, requestId, index, data) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), relayChunkWriteTimeoutMs);
+
+  try {
+    const response = await fetch(`${normalizeRelayUrl(folder.relayUrl || defaultRelayUrl)}/api/drive/requests/chunk-binary`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-nubem-pair-id': folder.pairId,
+        'x-nubem-token': folder.token,
+        'x-nubem-request-id': requestId,
+        'x-nubem-chunk-index': String(index),
+        'x-nubem-chunk-mode': 'write',
+      },
+      body: data,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || `Relay ${response.status}`);
+    }
+
+    return payload;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Relay timeout');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 const downloadRelayChunk = async (folder, requestId, index) =>
   relayRequest(folder.relayUrl || defaultRelayUrl, '/api/drive/requests/chunk', {
     pairId: folder.pairId,
@@ -670,6 +733,48 @@ const downloadRelayChunk = async (folder, requestId, index) =>
     requestId,
     index,
   });
+
+const downloadRelayBinaryChunk = async (folder, requestId, index) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), relayChunkReadTimeoutMs);
+
+  try {
+    const response = await fetch(`${normalizeRelayUrl(folder.relayUrl || defaultRelayUrl)}/api/drive/requests/chunk-binary`, {
+      method: 'POST',
+      headers: {
+        'x-nubem-pair-id': folder.pairId,
+        'x-nubem-token': folder.token,
+        'x-nubem-request-id': requestId,
+        'x-nubem-chunk-index': String(index),
+        'x-nubem-chunk-mode': 'read',
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Relay ${response.status}`);
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Relay timeout');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const downloadRelayChunkBuffer = async (folder, requestId, index) => {
+  if (await relaySupportsBinaryChunks(folder.relayUrl || defaultRelayUrl)) {
+    return downloadRelayBinaryChunk(folder, requestId, index);
+  }
+
+  const chunk = await downloadRelayChunk(folder, requestId, index);
+  return Buffer.from(chunk.data, 'base64');
+};
 
 const completeRelayRequest = async (folder, requestId, result, error) =>
   relayRequest(folder.relayUrl || defaultRelayUrl, '/api/drive/requests/complete', {
@@ -744,13 +849,19 @@ const sendFileToRelay = async (state, folder, request) => {
   const buffer = Buffer.alloc(chunkSize);
   let index = 0;
   let offset = 0;
+  const useBinaryChunks = await relaySupportsBinaryChunks(folder.relayUrl || defaultRelayUrl);
 
   try {
     reportTransfer(folder, request, 'download', stat.size, 0, true);
     while (offset < stat.size) {
       const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
       if (bytesRead <= 0) break;
-      await uploadRelayChunk(folder, request.id, index, buffer.subarray(0, bytesRead).toString('base64'));
+      const chunk = buffer.subarray(0, bytesRead);
+      if (useBinaryChunks) {
+        await uploadRelayBinaryChunk(folder, request.id, index, chunk);
+      } else {
+        await uploadRelayChunk(folder, request.id, index, chunk.toString('base64'));
+      }
       offset += bytesRead;
       index += 1;
       reportTransfer(folder, request, 'download', stat.size, offset);
@@ -798,10 +909,9 @@ const receiveFileFromRelay = async (state, folder, request) => {
   try {
     reportTransfer(folder, request, 'upload', Number(request.totalBytes || 0), 0, true);
     for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
-      const chunk = await downloadRelayChunk(folder, request.id, index);
-      const buffer = Buffer.from(chunk.data, 'base64');
-      stream.write(buffer);
-      offset += buffer.length;
+      const chunk = await downloadRelayChunkBuffer(folder, request.id, index);
+      stream.write(chunk);
+      offset += chunk.length;
       reportTransfer(folder, request, 'upload', Number(request.totalBytes || 0), offset);
     }
     completed = true;

@@ -71,6 +71,8 @@ const syncUploadConcurrency = Math.max(
   1,
   Math.min(8, Number.parseInt(process.env.NUBEM_SYNC_CONCURRENCY || '4', 10) || 4)
 );
+const relayFeatureCacheTtlMs = 60 * 1000;
+const relayFeatureCache = new Map();
 
 const now = () => new Date().toISOString();
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -682,6 +684,32 @@ const relayRequest = async (relayUrl, endpoint, body, timeoutMs = relayRequestTi
   } finally {
     clearTimeout(timeout);
   }
+};
+
+const relayFeatures = async (relayUrl) => {
+  const normalizedRelayUrl = normalizeRelayUrl(relayUrl);
+  const cached = relayFeatureCache.get(normalizedRelayUrl);
+  if (cached && Date.now() - cached.checkedAt < relayFeatureCacheTtlMs) return cached.features;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(`${normalizedRelayUrl}/api/drive/health`, { signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    const features = response.ok && Array.isArray(payload.features) ? payload.features.map(String) : [];
+    relayFeatureCache.set(normalizedRelayUrl, { features, checkedAt: Date.now() });
+    return features;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const relaySupportsBinaryChunks = async (relayUrl) => {
+  const features = await relayFeatures(relayUrl);
+  return features.includes('binaryChunks');
 };
 
 const mapRelayDevice = (device, currentDeviceId) => ({
@@ -1607,6 +1635,43 @@ const uploadRelayChunk = async (folderId, requestId, index, data) => {
   });
 };
 
+const uploadRelayBinaryChunk = async (folderId, requestId, index, data) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), relayChunkWriteTimeoutMs);
+
+  try {
+    const response = await fetch(`${normalizeRelayUrl(relayUrl)}/api/drive/requests/chunk-binary`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-nubem-pair-id': pairId,
+        'x-nubem-token': token,
+        'x-nubem-request-id': requestId,
+        'x-nubem-chunk-index': String(index),
+        'x-nubem-chunk-mode': 'write',
+      },
+      body: data,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || `Relay ${response.status}`);
+    }
+
+    return payload;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Relay timeout');
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 const markUploadReady = async (folderId, requestId) => {
   const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   return relayRequest(relayUrl, '/api/drive/requests/upload-ready', {
@@ -1634,6 +1699,51 @@ const downloadRelayChunk = async (folderId, requestId, index) => {
     requestId,
     index,
   });
+};
+
+const downloadRelayBinaryChunk = async (folderId, requestId, index) => {
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), relayChunkReadTimeoutMs);
+
+  try {
+    const response = await fetch(`${normalizeRelayUrl(relayUrl)}/api/drive/requests/chunk-binary`, {
+      method: 'POST',
+      headers: {
+        'x-nubem-pair-id': pairId,
+        'x-nubem-token': token,
+        'x-nubem-request-id': requestId,
+        'x-nubem-chunk-index': String(index),
+        'x-nubem-chunk-mode': 'read',
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Relay ${response.status}`);
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Relay timeout');
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const downloadRelayChunkBuffer = async (folderId, requestId, index) => {
+  const { relayUrl } = getVaultCredentials(folderId);
+  if (await relaySupportsBinaryChunks(relayUrl)) {
+    return downloadRelayBinaryChunk(folderId, requestId, index);
+  }
+
+  const chunk = await downloadRelayChunk(folderId, requestId, index);
+  return Buffer.from(chunk.data, 'base64');
 };
 
 const isChunkMissingError = (error) => String(error?.message || error || '').includes('Chunk missing');
@@ -1674,8 +1784,8 @@ const waitForProgressiveDownload = async (folderId, requestId, stream, timeoutMs
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const chunk = await downloadRelayChunk(folderId, requestId, nextChunk);
-      await writeStreamBuffer(stream, Buffer.from(chunk.data, 'base64'));
+      const chunk = await downloadRelayChunkBuffer(folderId, requestId, nextChunk);
+      await writeStreamBuffer(stream, chunk);
       nextChunk += 1;
       continue;
     } catch (error) {
@@ -1716,12 +1826,19 @@ const sendFileToRelay = async (requestId, folderId, relativePath) => {
   const buffer = Buffer.alloc(chunkSize);
   let index = 0;
   let offset = 0;
+  const { relayUrl } = getVaultCredentials(folderId);
+  const useBinaryChunks = await relaySupportsBinaryChunks(relayUrl);
 
   try {
     while (offset < stat.size) {
       const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
       if (bytesRead <= 0) break;
-      await uploadRelayChunk(folderId, requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
+      const chunk = buffer.subarray(0, bytesRead);
+      if (useBinaryChunks) {
+        await uploadRelayBinaryChunk(folderId, requestId, index, chunk);
+      } else {
+        await uploadRelayChunk(folderId, requestId, index, chunk.toString('base64'));
+      }
       offset += bytesRead;
       index += 1;
     }
@@ -1766,8 +1883,8 @@ const receiveFileFromRelay = async (vaultFolderId, request) => {
   let receiveError = null;
   try {
     for (let index = 0; index < Number(request.chunkCount || 0); index += 1) {
-      const chunk = await downloadRelayChunk(vaultFolderId, request.id, index);
-      stream.write(Buffer.from(chunk.data, 'base64'));
+      const chunk = await downloadRelayChunkBuffer(vaultFolderId, request.id, index);
+      stream.write(chunk);
     }
     completed = true;
   } catch (error) {
@@ -2180,7 +2297,7 @@ const makeQueuedSyncFile = (root, rootName, sourcePath, stat) => ({
   error: '',
 });
 
-const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount, modifiedAt = '') => {
+const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalBytes, chunkCount, modifiedAt = '', chunkFormat = 'base64') => {
   const { folder, pairId, relayUrl, token } = getVaultCredentials(vaultFolderId);
   const payload = await relayRequest(relayUrl, '/api/drive/requests/create', {
     pairId,
@@ -2192,6 +2309,7 @@ const createUploadRequest = async (vaultFolderId, relativePath, fileName, totalB
     totalBytes,
     sizeLabel: formatBytes(totalBytes),
     chunkCount,
+    chunkFormat,
     modifiedAt,
   });
 
@@ -2212,16 +2330,35 @@ const uploadFileToVault = async (vaultFolderId, sourceFile, targetRelativePath, 
 
   try {
     file = fs.openSync(sourceFile, 'r');
-    requestId = await createUploadRequest(vaultFolderId, targetRelativePath, path.basename(sourceFile), stat.size, chunkCount, modifiedAt);
+    const { relayUrl } = getVaultCredentials(vaultFolderId);
+    const useBinaryChunks = await relaySupportsBinaryChunks(relayUrl);
+    requestId = await createUploadRequest(
+      vaultFolderId,
+      targetRelativePath,
+      path.basename(sourceFile),
+      stat.size,
+      chunkCount,
+      modifiedAt,
+      useBinaryChunks ? 'binary' : 'base64'
+    );
 
     if (stat.size === 0) {
-      await uploadRelayChunk(vaultFolderId, requestId, 0, Buffer.alloc(0).toString('base64'));
+      if (useBinaryChunks) {
+        await uploadRelayBinaryChunk(vaultFolderId, requestId, 0, Buffer.alloc(0));
+      } else {
+        await uploadRelayChunk(vaultFolderId, requestId, 0, Buffer.alloc(0).toString('base64'));
+      }
     }
 
     while (offset < stat.size) {
       const bytesRead = fs.readSync(file, buffer, 0, Math.min(chunkSize, stat.size - offset), offset);
       if (bytesRead <= 0) break;
-      await uploadRelayChunk(vaultFolderId, requestId, index, buffer.subarray(0, bytesRead).toString('base64'));
+      const chunk = buffer.subarray(0, bytesRead);
+      if (useBinaryChunks) {
+        await uploadRelayBinaryChunk(vaultFolderId, requestId, index, chunk);
+      } else {
+        await uploadRelayChunk(vaultFolderId, requestId, index, chunk.toString('base64'));
+      }
       offset += bytesRead;
       index += 1;
       onProgress(offset, stat.size);

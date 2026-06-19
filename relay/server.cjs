@@ -17,6 +17,8 @@ const joinRateWindowMs = 10 * 60 * 1000;
 const joinRateLimit = 24;
 const defaultBodyLimitBytes = 512 * 1024;
 const chunkBodyLimitBytes = 8 * 1024 * 1024;
+const binaryChunkBodyLimitBytes = 8 * 1024 * 1024;
+const chunkStatePersistIntervalMs = 30 * 1000;
 const pairCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const now = () => new Date().toISOString();
@@ -49,6 +51,18 @@ const send = (response, status, payload) => {
     'content-type': 'application/json',
   });
   response.end(JSON.stringify(payload));
+};
+
+const sendBinary = (response, status, body, headers = {}) => {
+  response.writeHead(status, {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-headers': 'content-type,x-nubem-pair-id,x-nubem-token,x-nubem-request-id,x-nubem-chunk-index,x-nubem-chunk-mode',
+    'content-type': 'application/octet-stream',
+    'content-length': body.length,
+    ...headers,
+  });
+  response.end(body);
 };
 
 const sendHtml = (response, status, html) => {
@@ -95,6 +109,23 @@ const readBody = (request, limitBytes = defaultBodyLimitBytes) =>
         reject(new Error('Bad JSON'));
       }
     });
+    request.on('error', reject);
+  });
+
+const readRawBody = (request, limitBytes = binaryChunkBodyLimitBytes) =>
+  new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+    request.on('data', (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > limitBytes) {
+        reject(new Error('Body too large'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks)));
     request.on('error', reject);
   });
 
@@ -711,6 +742,7 @@ const publicRequest = (request) => ({
   totalBytes: request.totalBytes,
   sizeLabel: request.sizeLabel,
   chunkCount: request.chunkCount,
+  chunkFormat: request.chunkFormat === 'binary' ? 'binary' : 'base64',
   modifiedAt: request.modifiedAt,
   requesterId: request.requesterId,
   createdAt: request.createdAt,
@@ -719,6 +751,28 @@ const publicRequest = (request) => ({
 const chunkDir = (requestId) => path.join(dataDir, 'chunks', requestId);
 
 const chunkPath = (requestId, index) => path.join(chunkDir(requestId), `${index}.b64`);
+
+const headerValue = (request, name) => String(request.headers[name.toLowerCase()] || '');
+
+const chunkFormat = (request) => (request.chunkFormat === 'binary' ? 'binary' : 'base64');
+
+const chunkFileAsBase64 = (request, file) => {
+  const data = fs.readFileSync(file);
+  return chunkFormat(request) === 'binary' ? data.toString('base64') : data.toString('utf8');
+};
+
+const chunkFileAsBinary = (request, file) => {
+  const data = fs.readFileSync(file);
+  return chunkFormat(request) === 'binary' ? data : Buffer.from(data.toString('utf8'), 'base64');
+};
+
+const touchChunkRequest = (state, request, force = false) => {
+  const previousUpdatedAt = new Date(request.updatedAt || 0).getTime();
+  request.updatedAt = now();
+  if (force || !Number.isFinite(previousUpdatedAt) || Date.now() - previousUpdatedAt >= chunkStatePersistIntervalMs) {
+    writeState(state);
+  }
+};
 
 const requestResult = (request) => ({
   ok: true,
@@ -923,6 +977,7 @@ const handlers = {
       totalBytes: Number.isFinite(body.totalBytes) ? body.totalBytes : 0,
       sizeLabel: String(body.sizeLabel || '').slice(0, 40),
       chunkCount: Number.isFinite(body.chunkCount) ? body.chunkCount : 0,
+      chunkFormat: body.chunkFormat === 'binary' ? 'binary' : 'base64',
       modifiedAt: String(body.modifiedAt || '').slice(0, 64),
       requesterId: tokenDeviceId(pair, body.token),
       status: type === 'upload' ? 'uploading' : 'pending',
@@ -1150,8 +1205,8 @@ const handlers = {
 
       fs.mkdirSync(chunkDir(request.id), { recursive: true });
       fs.writeFileSync(chunkPath(request.id, Number(body.index || 0)), String(body.data));
-      request.updatedAt = now();
-      writeState(state);
+      request.chunkFormat = 'base64';
+      touchChunkRequest(state, request, Number(body.index || 0) === 0);
       return { ok: true };
     }
 
@@ -1165,7 +1220,59 @@ const handlers = {
       return { status: 404, payload: { ok: false, error: 'Chunk missing' } };
     }
 
-    return { ok: true, data: fs.readFileSync(file, 'utf8') };
+    return { ok: true, data: chunkFileAsBase64(request, file) };
+  },
+
+  'POST /api/drive/requests/chunk-binary': async (body, httpRequest) => {
+    const state = readState();
+    const pairId = headerValue(httpRequest, 'x-nubem-pair-id');
+    const token = headerValue(httpRequest, 'x-nubem-token');
+    const requestId = headerValue(httpRequest, 'x-nubem-request-id');
+    const index = Number(headerValue(httpRequest, 'x-nubem-chunk-index') || 0);
+    const mode = headerValue(httpRequest, 'x-nubem-chunk-mode') === 'write' ? 'write' : 'read';
+    const pair = verifyPair(state, pairId, token);
+
+    if (!pair) {
+      return { status: 401, payload: { ok: false, error: 'Not linked' } };
+    }
+
+    const relayRequest = pair.requests?.[requestId];
+    if (!relayRequest || !['download', 'upload'].includes(relayRequest.type)) {
+      return { status: 404, payload: { ok: false, error: 'Request expired' } };
+    }
+
+    if (mode === 'write') {
+      const requesterId = tokenDeviceId(pair, token);
+      const canWriteDownloadChunk = relayRequest.type === 'download' && tokenRole(pair, token) === 'storage';
+      const canWriteUploadChunk = relayRequest.type === 'upload' && relayRequest.requesterId === requesterId;
+
+      if (!canWriteDownloadChunk && !canWriteUploadChunk) {
+        return { status: 401, payload: { ok: false, error: 'Storage token required' } };
+      }
+
+      if (relayRequest.type === 'upload' && relayRequest.status !== 'uploading') {
+        return { status: 409, payload: { ok: false, error: 'Upload is no longer active' } };
+      }
+
+      const previousFormat = relayRequest.chunkFormat;
+      relayRequest.chunkFormat = 'binary';
+      fs.mkdirSync(chunkDir(relayRequest.id), { recursive: true });
+      fs.writeFileSync(chunkPath(relayRequest.id, index), body);
+      touchChunkRequest(state, relayRequest, index === 0 || previousFormat !== 'binary');
+      return { ok: true };
+    }
+
+    const requesterId = tokenDeviceId(pair, token);
+    if (relayRequest.requesterId !== requesterId && tokenRole(pair, token) !== 'storage') {
+      return { status: 403, payload: { ok: false, error: 'Not your request' } };
+    }
+
+    const file = chunkPath(relayRequest.id, index);
+    if (!fs.existsSync(file)) {
+      return { status: 404, payload: { ok: false, error: 'Chunk missing' } };
+    }
+
+    return { binary: chunkFileAsBinary(relayRequest, file) };
   },
 };
 
@@ -1225,12 +1332,14 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === 'GET' && request.url === '/api/drive/health') {
-    send(response, 200, { ok: true, at: now() });
+  const requestUrl = new URL(request.url, 'http://127.0.0.1');
+
+  if (request.method === 'GET' && requestUrl.pathname === '/api/drive/health') {
+    send(response, 200, { ok: true, at: now(), features: ['binaryChunks'] });
     return;
   }
 
-  const route = `${request.method} ${request.url}`;
+  const route = `${request.method} ${requestUrl.pathname}`;
   const handler = handlers[route];
 
   if (!handler) {
@@ -1239,10 +1348,18 @@ const server = http.createServer(async (request, response) => {
   }
 
   try {
+    const body = route === 'POST /api/drive/requests/chunk-binary'
+      ? await readRawBody(request, binaryChunkBodyLimitBytes)
+      : await readBody(request, route === 'POST /api/drive/requests/chunk' ? chunkBodyLimitBytes : defaultBodyLimitBytes);
     const result = await handler(
-      await readBody(request, route === 'POST /api/drive/requests/chunk' ? chunkBodyLimitBytes : defaultBodyLimitBytes),
+      body,
       request
     );
+    if (Buffer.isBuffer(result?.binary)) {
+      sendBinary(response, 200, result.binary, result.headers || {});
+      return;
+    }
+
     if (Number.isInteger(result?.status)) {
       send(response, result.status, result.payload);
       return;
