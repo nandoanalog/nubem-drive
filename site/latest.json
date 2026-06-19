@@ -1,5 +1,5 @@
 {
-  "latest": "0.0.86",
+  "latest": "0.0.87",
   "platforms": {
     "linux-x64": {
       "version": "0.0.85",
@@ -16,10 +16,10 @@
       "type": "deb"
     },
     "win32-x64": {
-      "version": "0.0.86",
-      "url": "https://drive.nubem.org/downloads/Nubem-Drive-Setup-0.0.86-x64.exe",
-      "fileName": "Nubem-Drive-Setup-0.0.86-x64.exe",
-      "sha256": "7b73a52b83e26fbdd460728b9bebe0b44fbd404cd704ae36ed8f75e7c6d1186d",
+      "version": "0.0.87",
+      "url": "https://drive.nubem.org/downloads/Nubem-Drive-Setup-0.0.87-x64.exe",
+      "fileName": "Nubem-Drive-Setup-0.0.87-x64.exe",
+      "sha256": "9e90f1505f8d0209efd295797477409a4e74142c44b306f708242039b212e206",
       "type": "nsis"
     }
   }

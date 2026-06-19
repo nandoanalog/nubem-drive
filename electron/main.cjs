@@ -99,6 +99,23 @@ const writeJsonFileAtomic = (file, value) => {
   }
 };
 
+const writeTextFileAtomic = (file, value) => {
+  const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, value);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    if (!['EEXIST', 'EPERM'].includes(error?.code)) {
+      fs.rmSync(tmp, { force: true });
+      throw error;
+    }
+
+    fs.rmSync(file, { force: true });
+    fs.renameSync(tmp, file);
+  }
+};
+
 const backupUnreadableState = (file) => {
   try {
     if (fs.existsSync(file)) {
@@ -470,6 +487,7 @@ const normalizeSyncJob = (job = {}) => {
     scanStatus: ['queued', 'scanning', 'complete'].includes(job.scanStatus) ? job.scanStatus : 'complete',
     queuePath: String(job.queuePath || ''),
     queueCursor: Number.isFinite(job.queueCursor) ? Math.max(0, job.queueCursor) : 0,
+    queueCompacted: job.queueCompacted === true,
     scanPendingDirs: Array.isArray(job.scanPendingDirs)
       ? job.scanPendingDirs.map(normalizeScanDir).filter((item) => item.path)
       : [],
@@ -1222,7 +1240,7 @@ const refreshPairingState = async () => {
           device: localRelayDevice(state, folder.vaultRole || 'storage'),
           folders: folder.vaultRole === 'storage' ? [publicVaultFolder(state, folder)] : undefined,
         });
-        state = applyVaultPayloadToFolder(state, folder.id, payload, folder.vaultRole || 'storage');
+        state = applyVaultPayloadToFolder(ensureState(), folder.id, payload, folder.vaultRole || 'storage');
         if (folder.vaultRole === 'storage') {
           handlePendingRelayRequests(folder.id).catch(() => undefined);
         }
@@ -1249,10 +1267,18 @@ const refreshPairingState = async () => {
         device: localRelayDevice(state),
         folders: state.pairing.role === 'storage' ? publicCloudFolders(state) : undefined,
       });
-      const nextState = applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
+      const currentState = ensureState();
+      const nextState = applyRelaySnapshot(
+        currentState,
+        payload,
+        currentState.pairing.role === 'storage' ? 'waiting' : 'linked'
+      );
       return refreshVpsStats(nextState);
     } catch (error) {
-      return refreshVpsStats(markRelayError(state, error instanceof Error ? error.message : 'Relay offline'));
+      return refreshVpsStats(markRelayError(
+        ensureState(),
+        error instanceof Error ? error.message : 'Relay offline'
+      ));
     }
   })();
 
@@ -2602,6 +2628,7 @@ const makeUploadJob = (vaultFolderId, folderPath) => {
     scanStatus,
     queuePath,
     queueCursor: 0,
+    queueCompacted: false,
     scanPendingDirs,
     createdAt: now(),
     updatedAt: now(),
@@ -2808,6 +2835,7 @@ const scanSyncJobBatch = (jobId) => {
     ...current,
     scanStatus: pendingDirs.length > 0 ? 'scanning' : 'complete',
     scanPendingDirs: pendingDirs,
+    queueCompacted: false,
     status: current.status === 'running' ? 'running' : 'queued',
     totalFiles: Number(current.totalFiles || 0) + queuedFiles.length,
     totalBytes: Number(current.totalBytes || 0) + queuedFiles.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0),
@@ -2825,11 +2853,79 @@ const readQueuedSyncFiles = (job, limit) => {
   };
 };
 
+const compactSyncJobQueue = (jobId) => {
+  const state = ensureState();
+  const job = state.syncJobs.find((item) => item.id === jobId);
+  if (!job || job.scanStatus !== 'complete' || job.queueCompacted) {
+    return state;
+  }
+
+  const queuePath = job.queuePath || syncQueueFile(job.id);
+  const queue = fs.existsSync(queuePath) ? fs.readFileSync(queuePath) : Buffer.alloc(0);
+  const uniqueFiles = new Map();
+  const completedPaths = new Set();
+  let lineStart = 0;
+
+  while (lineStart < queue.length) {
+    const newline = queue.indexOf(0x0a, lineStart);
+    const lineEnd = newline === -1 ? queue.length : newline + 1;
+    const line = queue.subarray(lineStart, newline === -1 ? queue.length : newline).toString('utf8').trim();
+
+    if (line) {
+      try {
+        const file = normalizeSyncFile(JSON.parse(line));
+        if (file.sourcePath && file.relativePath) {
+          if (!uniqueFiles.has(file.relativePath)) {
+            uniqueFiles.set(file.relativePath, file);
+          }
+          if (lineEnd <= Number(job.queueCursor || 0)) {
+            completedPaths.add(file.relativePath);
+          }
+        }
+      } catch {
+        // Ignore corrupt queue lines while repairing the queue.
+      }
+    }
+
+    lineStart = lineEnd;
+  }
+
+  for (const file of job.files) {
+    if (file.status === 'done') {
+      completedPaths.add(file.relativePath);
+    }
+  }
+
+  const remainingFiles = Array.from(uniqueFiles.values())
+    .filter((file) => !completedPaths.has(file.relativePath))
+    .map((file) => ({ ...file, status: 'pending', attempts: 0, uploadedBytes: 0, error: '' }));
+  const compactedQueuePath = path.join(syncQueueRoot(), `${job.id}.compacted.jsonl`);
+  const compactedContents = remainingFiles.length > 0
+    ? `${remainingFiles.map((file) => JSON.stringify(file)).join('\n')}\n`
+    : '';
+  writeTextFileAtomic(compactedQueuePath, compactedContents);
+
+  const completedFiles = Array.from(uniqueFiles.values()).filter((file) => completedPaths.has(file.relativePath));
+  return updateSyncJob(jobId, (current) => ({
+    ...current,
+    queuePath: compactedQueuePath,
+    queueCursor: 0,
+    queueCompacted: true,
+    totalFiles: uniqueFiles.size,
+    totalBytes: Array.from(uniqueFiles.values()).reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0),
+    completedFiles: completedFiles.length,
+    completedBytes: completedFiles.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0),
+    files: [],
+    lastError: '',
+    nextAttemptAt: '',
+  }));
+};
+
 const cleanupSyncJobFiles = (job) => {
   fs.rmSync(job.queuePath || syncQueueFile(job.id), { force: true });
   try {
     for (const entry of fs.readdirSync(syncQueueRoot())) {
-      if (entry.startsWith(`${job.id}.`) && entry.endsWith('.entries.jsonl')) {
+      if ((entry === `${job.id}.jsonl` || entry.startsWith(`${job.id}.`)) && entry.endsWith('.jsonl')) {
         fs.rmSync(path.join(syncQueueRoot(), entry), { force: true });
       }
     }
@@ -3057,9 +3153,17 @@ const processUploadJob = async (jobId) => {
         scanSyncJobBatch(jobId);
       }
 
-      const refreshed = ensureState().syncJobs.find((item) => item.id === jobId);
+      let refreshed = ensureState().syncJobs.find((item) => item.id === jobId);
       if (!refreshed) {
         return ensureState();
+      }
+
+      if (refreshed.scanStatus === 'complete' && !refreshed.queueCompacted) {
+        compactSyncJobQueue(jobId);
+        refreshed = ensureState().syncJobs.find((item) => item.id === jobId);
+        if (!refreshed) {
+          return ensureState();
+        }
       }
 
       const queuedBatch = readQueuedSyncFiles(refreshed, syncUploadConcurrency);
