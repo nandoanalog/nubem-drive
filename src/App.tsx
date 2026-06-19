@@ -277,6 +277,20 @@ function formatTime(value: string) {
   }).format(new Date(value))
 }
 
+function timeValue(value?: string) {
+  const timestamp = new Date(value || 0).getTime()
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function formatClockTime(value: string) {
+  if (!timeValue(value)) return ''
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
 function normalizeVaultPath(value = '') {
   return value.replace(/\\/g, '/').split('/').filter(Boolean).join('/')
 }
@@ -1321,6 +1335,8 @@ type PipelineRow = {
   totalBytes: number
   rateBytesPerSecond: number
   active: boolean
+  createdAt: string
+  updatedAt: string
 }
 
 function transferPipelineRow(transfer: TrafficTransfer): PipelineRow {
@@ -1338,6 +1354,8 @@ function transferPipelineRow(transfer: TrafficTransfer): PipelineRow {
     totalBytes: transfer.totalBytes,
     rateBytesPerSecond: transfer.rateBytesPerSecond,
     active: true,
+    createdAt: transfer.startedAt,
+    updatedAt: transfer.updatedAt || transfer.startedAt,
   }
 }
 
@@ -1355,7 +1373,26 @@ function queuePipelineRow(item: VpsQueueItem): PipelineRow {
     totalBytes: item.totalBytes || item.bytes,
     rateBytesPerSecond: 0,
     active: !item.stage.startsWith('waiting') && item.stage !== 'ready',
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt || item.createdAt,
   }
+}
+
+function pipelineSortRank(row: PipelineRow) {
+  if (row.active) return 0
+  if (row.stage.startsWith('waiting')) return 1
+  if (row.stage === 'ready') return 3
+  return 2
+}
+
+function comparePipelineRows(left: PipelineRow, right: PipelineRow) {
+  const rankDelta = pipelineSortRank(left) - pipelineSortRank(right)
+  if (rankDelta !== 0) return rankDelta
+
+  const updatedDelta = timeValue(right.updatedAt) - timeValue(left.updatedAt)
+  if (updatedDelta !== 0) return updatedDelta
+
+  return timeValue(right.createdAt) - timeValue(left.createdAt)
 }
 
 function stageLabel(stage: string) {
@@ -1397,13 +1434,12 @@ function routePillLabel(row: PipelineRow) {
 }
 
 function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: TrafficTransfer[] }) {
-  const transferRows = transfers.slice(0, 4).map(transferPipelineRow)
+  const transferRows = transfers.map(transferPipelineRow)
   const activeIds = new Set(transferRows.map((transfer) => transfer.id))
   const queueRows = (stats.queue.items || [])
     .filter((item) => !activeIds.has(item.id))
-    .slice(0, transferRows.length > 0 ? 4 : 6)
     .map(queuePipelineRow)
-  const rows = [...transferRows, ...queueRows].slice(0, 8)
+  const rows = [...transferRows, ...queueRows].sort(comparePipelineRows).slice(0, 8)
   const movingCount = rows.filter((row) => row.active).length
   const unfinishedFiles = stats.queue.files
   const doneFiles = stats.queue.doneFiles || stats.queue.stages.done
@@ -1458,8 +1494,8 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
 
       <div className="vps-routes" aria-label="Traffic routes">
         <div className="vps-routes-head">
-          <strong>Files</strong>
-          <span>{routeSummary}</span>
+          <strong>File status</strong>
+          <span>{routeSummary}, active first, newest</span>
         </div>
 
         {rows.length > 0 ? (
@@ -1478,10 +1514,15 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
                     <strong>{row.stageLabel}</strong>
                     <small>{row.clientName} / {row.vaultName} / {routePath(row.relativePath, row.fileName)}</small>
                   </span>
-                  <span className="route-size">
-                    {row.totalBytes > 0
-                      ? `${formatSizeLabel(row.transferredBytes)} / ${formatSizeLabel(row.totalBytes)}`
-                      : formatSizeLabel(row.transferredBytes || row.totalBytes)}
+                  <span className="route-meta">
+                    <span className="route-size">
+                      {row.totalBytes > 0
+                        ? `${formatSizeLabel(row.transferredBytes)} / ${formatSizeLabel(row.totalBytes)}`
+                        : formatSizeLabel(row.transferredBytes || row.totalBytes)}
+                    </span>
+                    <span className="route-time" title={row.updatedAt ? `Updated ${formatTime(row.updatedAt)}` : ''}>
+                      {formatClockTime(row.updatedAt)}
+                    </span>
                   </span>
                   <span className={`route-progress ${isWaiting || !row.totalBytes ? 'waiting' : ''}`} title={row.totalBytes ? `${percent}%` : row.stageLabel}>
                     <span style={{ width: row.totalBytes ? `${percent}%` : '100%' }} />

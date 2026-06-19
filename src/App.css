@@ -531,6 +531,7 @@ button:disabled {
 .route-main strong,
 .route-main small,
 .route-size,
+.route-time,
 .route-rate,
 .queue-pill {
   min-width: 0;
@@ -547,15 +548,28 @@ button:disabled {
 
 .route-main small,
 .route-size,
+.route-time,
 .route-rate {
   color: #68716d;
   font-size: 12px;
   font-weight: 800;
 }
 
+.route-meta {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  text-align: right;
+}
+
 .route-size,
 .route-rate {
   text-align: right;
+}
+
+.route-time {
+  color: #8b938f;
+  font-size: 11px;
 }
 
 .route-progress {
@@ -1498,8 +1512,12 @@ input:focus-visible {
     grid-row: 1;
   }
 
-  .route-size {
+  .route-meta {
     grid-column: 2 / 4;
+    text-align: left;
+  }
+
+  .route-size {
     text-align: left;
   }
 
