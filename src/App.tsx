@@ -24,7 +24,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob, TrafficState, TrafficTransfer } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob, VpsStats } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'retry' | null
@@ -86,6 +86,24 @@ const demoState: AppState = {
     uploadBytesPerSecond: 0,
     downloadBytesPerSecond: 0,
     active: [],
+  },
+  vpsStats: {
+    updatedAt: '',
+    traffic: {
+      inboundBytesPerSecond: 0,
+      outboundBytesPerSecond: 0,
+    },
+    queue: {
+      files: 0,
+      bytes: 0,
+      oldestAt: '',
+    },
+    storage: {
+      usedBytes: 0,
+      freeBytes: 0,
+      totalBytes: 0,
+      usedPercent: 0,
+    },
   },
   syncJobs: [],
   activity: [],
@@ -480,41 +498,29 @@ function onlineClientCount(folder: CloudFolder) {
   return folder.devices.length
 }
 
-function currentTraffic(state: AppState): TrafficState {
-  const traffic = state.traffic || {
-    updatedAt: '',
-    uploadBytesPerSecond: 0,
-    downloadBytesPerSecond: 0,
-    active: [],
-  }
-  const cutoff = Date.now() - 20_000
-  const active = Array.isArray(traffic.active)
-    ? traffic.active.filter((transfer) => new Date(transfer.updatedAt || 0).getTime() >= cutoff)
-    : []
-
-  return {
-    updatedAt: traffic.updatedAt || '',
-    uploadBytesPerSecond: active
-      .filter((transfer) => transfer.direction === 'download')
-      .reduce((sum, transfer) => sum + Math.max(0, transfer.rateBytesPerSecond || 0), 0),
-    downloadBytesPerSecond: active
-      .filter((transfer) => transfer.direction === 'upload')
-      .reduce((sum, transfer) => sum + Math.max(0, transfer.rateBytesPerSecond || 0), 0),
-    active,
-  }
-}
-
 function formatRate(bytesPerSecond: number) {
   return `${formatSizeLabel(Math.max(0, bytesPerSecond || 0))}/s`
 }
 
-function transferPercent(transfer: TrafficTransfer) {
-  if (!transfer.totalBytes) return 0
-  return Math.max(0, Math.min(100, Math.round((transfer.transferredBytes / transfer.totalBytes) * 100)))
-}
-
-function transferDirectionLabel(transfer: TrafficTransfer) {
-  return transfer.direction === 'upload' ? 'Uploading' : 'Downloading'
+function currentVpsStats(state: AppState): VpsStats {
+  return {
+    updatedAt: state.vpsStats?.updatedAt || '',
+    traffic: {
+      inboundBytesPerSecond: Math.max(0, state.vpsStats?.traffic?.inboundBytesPerSecond || 0),
+      outboundBytesPerSecond: Math.max(0, state.vpsStats?.traffic?.outboundBytesPerSecond || 0),
+    },
+    queue: {
+      files: Math.max(0, state.vpsStats?.queue?.files || 0),
+      bytes: Math.max(0, state.vpsStats?.queue?.bytes || 0),
+      oldestAt: state.vpsStats?.queue?.oldestAt || '',
+    },
+    storage: {
+      usedBytes: Math.max(0, state.vpsStats?.storage?.usedBytes || 0),
+      freeBytes: Math.max(0, state.vpsStats?.storage?.freeBytes || 0),
+      totalBytes: Math.max(0, state.vpsStats?.storage?.totalBytes || 0),
+      usedPercent: Math.max(0, Math.min(100, state.vpsStats?.storage?.usedPercent || 0)),
+    },
+  }
 }
 
 function matchesFilter(folder: CloudFolder, filter: FilterKey) {
@@ -537,7 +543,6 @@ function App() {
   const [remoteError, setRemoteError] = useState('')
   const [remoteNotice, setRemoteNotice] = useState('')
   const [shareDialog, setShareDialog] = useState<ShareDialogState>(null)
-  const [trafficExpanded, setTrafficExpanded] = useState(false)
 
   const api = window.nubemDrive
 
@@ -591,7 +596,7 @@ function App() {
   const selectedIsClientVault = selectedFolder?.vaultRole === 'client'
   const selectedIsLinkedClientVault = selectedIsClientVault && Boolean(selectedFolder?.pairId && selectedFolder.token)
   const isServerApp = state.appMode === 'server'
-  const serverTraffic = useMemo(() => currentTraffic(state), [state])
+  const serverVpsStats = useMemo(() => currentVpsStats(state), [state])
   const connection = connectionSummary(state, pairBusy, pairError)
   const canChooseFolders = isServerApp || Boolean(selectedIsLinkedClientVault)
   const chooseFoldersTitle = isServerApp
@@ -931,11 +936,7 @@ function App() {
             ) : (
               <>
                 {isServerApp ? (
-                  <ServerTrafficPanel
-                    expanded={trafficExpanded}
-                    onToggle={() => setTrafficExpanded((current) => !current)}
-                    traffic={serverTraffic}
-                  />
+                  <ServerVpsPanel stats={serverVpsStats} />
                 ) : null}
 
                 <div className="browser-toolbar">
@@ -1226,64 +1227,43 @@ function RemoteBrowser({
   )
 }
 
-function ServerTrafficPanel({
-  expanded,
-  onToggle,
-  traffic,
-}: {
-  expanded: boolean
-  onToggle: () => void
-  traffic: TrafficState
-}) {
-  const activeCount = traffic.active.length
-
+function ServerVpsPanel({ stats }: { stats: VpsStats }) {
   return (
-    <section className={expanded ? 'server-traffic expanded' : 'server-traffic'} aria-label="Server traffic">
-      <button className="server-traffic-summary" onClick={onToggle} type="button">
-        <span className="traffic-label">
-          <RefreshCcw size={16} />
+    <section className="server-vps-panel" aria-label="VPS">
+      <div className="vps-metric">
+        <span className="vps-icon traffic">
+          <RefreshCcw size={17} />
+        </span>
+        <span className="vps-copy">
           <strong>Traffic</strong>
+          <small>
+            <ArrowDown size={13} />
+            {formatRate(stats.traffic.inboundBytesPerSecond)}
+            <ArrowUp size={13} />
+            {formatRate(stats.traffic.outboundBytesPerSecond)}
+          </small>
         </span>
-        <span className="traffic-metric down" title="Inbound">
-          <ArrowDown size={15} />
-          {formatRate(traffic.downloadBytesPerSecond)}
-        </span>
-        <span className="traffic-metric up" title="Outbound">
-          <ArrowUp size={15} />
-          {formatRate(traffic.uploadBytesPerSecond)}
-        </span>
-        <span className="traffic-count">{activeCount}</span>
-        <ChevronRight className="traffic-chevron" size={17} />
-      </button>
+      </div>
 
-      {expanded ? (
-        <div className="server-traffic-detail">
-          {activeCount === 0 ? (
-            <div className="traffic-empty">No active transfers</div>
-          ) : (
-            traffic.active.map((transfer) => {
-              const percent = transferPercent(transfer)
-              const DirectionIcon = transfer.direction === 'upload' ? ArrowDown : ArrowUp
-              return (
-                <div className="traffic-row" key={transfer.id}>
-                  <span className={`traffic-row-icon ${transfer.direction}`}>
-                    <DirectionIcon size={16} />
-                  </span>
-                  <span className="traffic-row-copy">
-                    <strong>{transfer.vaultName}</strong>
-                    <small>{transfer.clientName} · {transfer.fileName}</small>
-                  </span>
-                  <span className="traffic-row-state">{transferDirectionLabel(transfer)}</span>
-                  <span className="traffic-row-progress" title={`${formatSizeLabel(transfer.transferredBytes)} of ${formatSizeLabel(transfer.totalBytes)}`}>
-                    <span style={{ width: `${percent}%` }} />
-                  </span>
-                  <span className="traffic-row-rate">{formatRate(transfer.rateBytesPerSecond)}</span>
-                </div>
-              )
-            })
-          )}
-        </div>
-      ) : null}
+      <div className="vps-metric">
+        <span className="vps-icon queue">
+          <FileText size={17} />
+        </span>
+        <span className="vps-copy">
+          <strong>{stats.queue.files.toLocaleString()} files</strong>
+          <small>Queue · {formatSizeLabel(stats.queue.bytes)}</small>
+        </span>
+      </div>
+
+      <div className="vps-metric">
+        <span className="vps-icon storage">
+          <HardDrive size={17} />
+        </span>
+        <span className="vps-copy">
+          <strong>{formatSizeLabel(stats.storage.freeBytes)} free</strong>
+          <small>{stats.storage.usedPercent}% used</small>
+        </span>
+      </div>
     </section>
   )
 }

@@ -153,6 +153,25 @@ export type TrafficState = {
   active: TrafficTransfer[]
 }
 
+export type VpsStats = {
+  updatedAt: string
+  traffic: {
+    inboundBytesPerSecond: number
+    outboundBytesPerSecond: number
+  }
+  queue: {
+    files: number
+    bytes: number
+    oldestAt: string
+  }
+  storage: {
+    usedBytes: number
+    freeBytes: number
+    totalBytes: number
+    usedPercent: number
+  }
+}
+
 export type SyncFile = {
   sourcePath: string
   relativePath: string
@@ -205,6 +224,7 @@ export type AppState = {
   folders: CloudFolder[]
   devices: Device[]
   traffic: TrafficState
+  vpsStats: VpsStats
   syncJobs: SyncJob[]
   activity: ActivityItem[]
 }

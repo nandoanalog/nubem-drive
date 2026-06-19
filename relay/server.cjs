@@ -9,6 +9,7 @@ const stateFile = path.join(dataDir, 'state.json');
 const pairCodeTtlMs = 5 * 60 * 1000;
 const onlineWindowMs = 35 * 1000;
 const requestTtlMs = 24 * 60 * 60 * 1000;
+const completedRequestTtlMs = 30 * 60 * 1000;
 const uploadStallMs = 10 * 60 * 1000;
 const shareTtlMs = 24 * 60 * 60 * 1000;
 const shareMaxDownloads = 3;
@@ -19,7 +20,9 @@ const defaultBodyLimitBytes = 512 * 1024;
 const chunkBodyLimitBytes = 8 * 1024 * 1024;
 const binaryChunkBodyLimitBytes = 8 * 1024 * 1024;
 const chunkStatePersistIntervalMs = 30 * 1000;
+const trafficWindowMs = 15 * 1000;
 const pairCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const trafficEvents = [];
 
 const now = () => new Date().toISOString();
 
@@ -222,13 +225,18 @@ const prunePairs = (state) => {
     ensurePairShape(pair);
 
     for (const [requestId, request] of Object.entries(pair.requests || {})) {
-      if (new Date(request.createdAt || 0).getTime() < cutoff) {
+      const updatedAt = new Date(request.updatedAt || request.createdAt || 0).getTime();
+      const completedExpired =
+        ['ready', 'error'].includes(request.status) &&
+        Number.isFinite(updatedAt) &&
+        Date.now() - updatedAt > completedRequestTtlMs;
+
+      if (new Date(request.createdAt || 0).getTime() < cutoff || completedExpired) {
         delete pair.requests[requestId];
         fs.rmSync(path.join(dataDir, 'chunks', requestId), { recursive: true, force: true });
         continue;
       }
 
-      const updatedAt = new Date(request.updatedAt || request.createdAt || 0).getTime();
       if (request.status === 'uploading' && updatedAt < uploadCutoff) {
         request.status = 'error';
         request.error = 'Upload interrupted';
@@ -782,7 +790,122 @@ const requestResult = (request) => ({
   error: request.error || '',
 });
 
+const pruneTrafficEvents = () => {
+  const cutoff = Date.now() - trafficWindowMs;
+  while (trafficEvents.length > 0 && trafficEvents[0].at < cutoff) {
+    trafficEvents.shift();
+  }
+};
+
+const recordTraffic = (direction, bytes) => {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return;
+  trafficEvents.push({ at: Date.now(), direction, bytes: size });
+  pruneTrafficEvents();
+};
+
+const relayTrafficStats = () => {
+  pruneTrafficEvents();
+  const seconds = trafficWindowMs / 1000;
+  const inboundBytes = trafficEvents
+    .filter((event) => event.direction === 'inbound')
+    .reduce((sum, event) => sum + event.bytes, 0);
+  const outboundBytes = trafficEvents
+    .filter((event) => event.direction === 'outbound')
+    .reduce((sum, event) => sum + event.bytes, 0);
+
+  return {
+    inboundBytesPerSecond: inboundBytes / seconds,
+    outboundBytesPerSecond: outboundBytes / seconds,
+  };
+};
+
+const diskStats = () => {
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    const stats = fs.statfsSync(dataDir);
+    const totalBytes = stats.blocks * stats.bsize;
+    const freeBytes = stats.bavail * stats.bsize;
+    const usedBytes = Math.max(0, totalBytes - freeBytes);
+
+    return {
+      usedBytes,
+      freeBytes,
+      totalBytes,
+      usedPercent: totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0,
+    };
+  } catch {
+    return {
+      usedBytes: 0,
+      freeBytes: 0,
+      totalBytes: 0,
+      usedPercent: 0,
+    };
+  }
+};
+
+const pairsForStats = (state, credentials) => {
+  const requested = Array.isArray(credentials) ? credentials : [];
+  if (requested.length === 0) return [];
+
+  const pairs = [];
+  const seen = new Set();
+  for (const item of requested.slice(0, 128)) {
+    const pair = verifyStorage(state, item?.pairId, item?.token);
+    if (pair && !seen.has(pair.id)) {
+      seen.add(pair.id);
+      pairs.push(pair);
+    }
+  }
+
+  return pairs;
+};
+
+const queueStats = (pairs) => {
+  let files = 0;
+  let bytes = 0;
+  let oldestAt = '';
+  let oldestTime = Number.POSITIVE_INFINITY;
+
+  for (const pair of pairs) {
+    for (const request of Object.values(pair.requests || {})) {
+      if (!['pending', 'uploading', 'ready'].includes(request.status)) continue;
+      if (!['download', 'upload'].includes(request.type)) continue;
+
+      files += 1;
+      bytes += Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0));
+
+      const createdAt = new Date(request.createdAt || request.updatedAt || 0).getTime();
+      if (Number.isFinite(createdAt) && createdAt < oldestTime) {
+        oldestTime = createdAt;
+        oldestAt = request.createdAt || request.updatedAt || '';
+      }
+    }
+  }
+
+  return { files, bytes, oldestAt };
+};
+
+const vpsStatsPayload = (state, credentials = []) => {
+  const pairs = pairsForStats(state, credentials);
+
+  return {
+    ok: true,
+    stats: {
+      updatedAt: now(),
+      traffic: relayTrafficStats(),
+      queue: queueStats(pairs),
+      storage: diskStats(),
+    },
+  };
+};
+
 const handlers = {
+  'POST /api/drive/stats': async (body) => {
+    const state = readState();
+    return vpsStatsPayload(state, body.pairs);
+  },
+
   'POST /api/drive/vaults/create': async (body) => {
     const state = readState();
     const pairId = crypto.randomUUID();
@@ -1156,6 +1279,31 @@ const handlers = {
     return { ok: true };
   },
 
+  'POST /api/drive/requests/dispose': async (body) => {
+    const state = readState();
+    const pair = verifyPair(state, body.pairId, body.token);
+
+    if (!pair) {
+      return { status: 401, payload: { ok: false, error: 'Not linked' } };
+    }
+
+    const request = pair.requests?.[body.requestId];
+    if (!request) {
+      return { ok: true, missing: true };
+    }
+
+    const requesterId = tokenDeviceId(pair, body.token);
+    if (request.requesterId !== requesterId && tokenRole(pair, body.token) !== 'storage') {
+      return { status: 403, payload: { ok: false, error: 'Not your request' } };
+    }
+
+    delete pair.requests[request.id];
+    fs.rmSync(chunkDir(request.id), { recursive: true, force: true });
+    writeState(state);
+
+    return { ok: true };
+  },
+
   'POST /api/drive/requests/result': async (body) => {
     const state = readState();
     const pair = verifyPair(state, body.pairId, body.token);
@@ -1205,6 +1353,7 @@ const handlers = {
 
       fs.mkdirSync(chunkDir(request.id), { recursive: true });
       fs.writeFileSync(chunkPath(request.id, Number(body.index || 0)), String(body.data));
+      recordTraffic('inbound', Buffer.byteLength(String(body.data || ''), 'base64'));
       request.chunkFormat = 'base64';
       touchChunkRequest(state, request, Number(body.index || 0) === 0);
       return { ok: true };
@@ -1220,7 +1369,9 @@ const handlers = {
       return { status: 404, payload: { ok: false, error: 'Chunk missing' } };
     }
 
-    return { ok: true, data: chunkFileAsBase64(request, file) };
+    const data = chunkFileAsBase64(request, file);
+    recordTraffic('outbound', Buffer.byteLength(data, 'base64'));
+    return { ok: true, data };
   },
 
   'POST /api/drive/requests/chunk-binary': async (body, httpRequest) => {
@@ -1258,6 +1409,7 @@ const handlers = {
       relayRequest.chunkFormat = 'binary';
       fs.mkdirSync(chunkDir(relayRequest.id), { recursive: true });
       fs.writeFileSync(chunkPath(relayRequest.id, index), body);
+      recordTraffic('inbound', body.length);
       touchChunkRequest(state, relayRequest, index === 0 || previousFormat !== 'binary');
       return { ok: true };
     }
@@ -1272,7 +1424,9 @@ const handlers = {
       return { status: 404, payload: { ok: false, error: 'Chunk missing' } };
     }
 
-    return { binary: chunkFileAsBinary(relayRequest, file) };
+    const binary = chunkFileAsBinary(relayRequest, file);
+    recordTraffic('outbound', binary.length);
+    return { binary };
   },
 };
 
@@ -1336,6 +1490,11 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === 'GET' && requestUrl.pathname === '/api/drive/health') {
     send(response, 200, { ok: true, at: now(), features: ['binaryChunks'] });
+    return;
+  }
+
+  if (request.method === 'GET' && requestUrl.pathname === '/api/drive/stats') {
+    send(response, 200, vpsStatsPayload(readState()));
     return;
   }
 

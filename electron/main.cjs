@@ -200,6 +200,63 @@ const updateDefaults = (updates = {}, { restoreTransient = false } = {}) => ({
   progress: Number.isFinite(updates.progress) ? updates.progress : 0,
 });
 
+const emptyVpsStats = () => ({
+  updatedAt: now(),
+  traffic: {
+    inboundBytesPerSecond: 0,
+    outboundBytesPerSecond: 0,
+  },
+  queue: {
+    files: 0,
+    bytes: 0,
+    oldestAt: '',
+  },
+  storage: {
+    usedBytes: 0,
+    freeBytes: 0,
+    totalBytes: 0,
+    usedPercent: 0,
+  },
+});
+
+const normalizeVpsStats = (stats = {}) => {
+  const fresh = emptyVpsStats();
+  const traffic = stats.traffic || {};
+  const queue = stats.queue || {};
+  const storage = stats.storage || {};
+  const totalBytes = Number.isFinite(storage.totalBytes) ? Math.max(0, storage.totalBytes) : fresh.storage.totalBytes;
+  const usedBytes = Number.isFinite(storage.usedBytes) ? Math.max(0, storage.usedBytes) : fresh.storage.usedBytes;
+  const freeBytes = Number.isFinite(storage.freeBytes) ? Math.max(0, storage.freeBytes) : fresh.storage.freeBytes;
+  const usedPercent = Number.isFinite(storage.usedPercent)
+    ? Math.max(0, Math.min(100, storage.usedPercent))
+    : totalBytes > 0
+      ? Math.round((usedBytes / totalBytes) * 100)
+      : 0;
+
+  return {
+    updatedAt: String(stats.updatedAt || fresh.updatedAt),
+    traffic: {
+      inboundBytesPerSecond: Number.isFinite(traffic.inboundBytesPerSecond)
+        ? Math.max(0, traffic.inboundBytesPerSecond)
+        : 0,
+      outboundBytesPerSecond: Number.isFinite(traffic.outboundBytesPerSecond)
+        ? Math.max(0, traffic.outboundBytesPerSecond)
+        : 0,
+    },
+    queue: {
+      files: Number.isFinite(queue.files) ? Math.max(0, queue.files) : 0,
+      bytes: Number.isFinite(queue.bytes) ? Math.max(0, queue.bytes) : 0,
+      oldestAt: String(queue.oldestAt || ''),
+    },
+    storage: {
+      usedBytes,
+      freeBytes,
+      totalBytes,
+      usedPercent,
+    },
+  };
+};
+
 const defaultClientVaultName = 'My Vault';
 
 const makeClientVault = (patch = {}) => ({
@@ -254,6 +311,7 @@ const makeInitialState = () => {
       downloadBytesPerSecond: 0,
       active: [],
     },
+    vpsStats: emptyVpsStats(),
     syncJobs: [],
     activity: [],
     updates: updateDefaults(),
@@ -550,6 +608,7 @@ const normalizeState = (rawState, { restoreUpdates = false } = {}) => {
     syncJobs,
     activity: Array.isArray(state.activity) ? state.activity : [],
     updates: updateDefaults(state.updates, { restoreTransient: restoreUpdates }),
+    vpsStats: normalizeVpsStats(state.vpsStats),
     devices: [localDevice, ...devices],
   };
 };
@@ -681,6 +740,63 @@ const relayRequest = async (relayUrl, endpoint, body, timeoutMs = relayRequestTi
     }
 
     throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const storageCredentialsForStats = (state) => {
+  const credentials = [];
+  const seen = new Set();
+  const add = (pairId, token) => {
+    const key = `${pairId || ''}:${token || ''}`;
+    if (!pairId || !token || seen.has(key)) return;
+    seen.add(key);
+    credentials.push({ pairId, token });
+  };
+
+  if (state.pairing.role === 'storage') {
+    add(state.pairing.pairId, state.pairing.token);
+  }
+
+  for (const folder of state.folders || []) {
+    if (folder.vaultRole === 'storage') {
+      add(folder.pairId, folder.token);
+    }
+  }
+
+  return credentials;
+};
+
+const refreshVpsStats = async (state) => {
+  if (!isServerApp) return state;
+
+  const relayUrl = normalizeRelayUrl(state.pairing.relayUrl || defaultRelayUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(`${relayUrl}/api/drive/stats`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairs: storageCredentialsForStats(state) }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || `Relay ${response.status}`);
+    }
+
+    return writeState({
+      ...state,
+      vpsStats: normalizeVpsStats(payload.stats || payload),
+    });
+  } catch {
+    return writeState({
+      ...state,
+      vpsStats: normalizeVpsStats(state.vpsStats),
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -1039,7 +1155,7 @@ const refreshPairingState = async () => {
     const vaults = state.folders.filter((folder) => folder.pairId && folder.token);
 
     if (vaults.length === 0 && (!state.pairing.pairId || !state.pairing.token)) {
-      return state;
+      return refreshVpsStats(state);
     }
 
     for (const folder of vaults) {
@@ -1067,7 +1183,7 @@ const refreshPairingState = async () => {
     }
 
     if (!state.pairing.pairId || !state.pairing.token) {
-      return state;
+      return refreshVpsStats(state);
     }
 
     try {
@@ -1078,9 +1194,9 @@ const refreshPairingState = async () => {
         folders: state.pairing.role === 'storage' ? publicCloudFolders(state) : undefined,
       });
       const nextState = applyRelaySnapshot(state, payload, state.pairing.role === 'storage' ? 'waiting' : 'linked');
-      return nextState;
+      return refreshVpsStats(nextState);
     } catch (error) {
-      return markRelayError(state, error instanceof Error ? error.message : 'Relay offline');
+      return refreshVpsStats(markRelayError(state, error instanceof Error ? error.message : 'Relay offline'));
     }
   })();
 
@@ -1591,10 +1707,12 @@ const waitForVaultRequest = async (folderId, requestId, timeoutMs = 120000) => {
     const payload = await getVaultRequestStatus(folderId, requestId);
 
     if (payload.status === 'ready') {
+      disposeVaultRequest(folderId, requestId).catch(() => undefined);
       return payload.result;
     }
 
     if (payload.status === 'error') {
+      disposeVaultRequest(folderId, requestId).catch(() => undefined);
       throw new Error(payload.error || 'Remote request failed');
     }
 
@@ -1607,6 +1725,16 @@ const waitForVaultRequest = async (folderId, requestId, timeoutMs = 120000) => {
 const getVaultRequestStatus = async (folderId, requestId) => {
   const { pairId, relayUrl, token } = getVaultCredentials(folderId);
   return relayRequest(relayUrl, '/api/drive/requests/result', {
+    pairId,
+    token,
+    requestId,
+  });
+};
+
+const disposeVaultRequest = async (folderId, requestId) => {
+  if (!requestId) return { ok: true };
+  const { pairId, relayUrl, token } = getVaultCredentials(folderId);
+  return relayRequest(relayUrl, '/api/drive/requests/dispose', {
     pairId,
     token,
     requestId,
@@ -1796,12 +1924,14 @@ const waitForProgressiveDownload = async (folderId, requestId, stream, timeoutMs
 
     const status = await getVaultRequestStatus(folderId, requestId);
     if (status.status === 'error') {
+      disposeVaultRequest(folderId, requestId).catch(() => undefined);
       throw new Error(status.error || 'Remote request failed');
     }
 
     if (status.status === 'ready') {
       result = status.result || {};
       if (nextChunk >= Number(result.chunkCount || 0)) {
+        disposeVaultRequest(folderId, requestId).catch(() => undefined);
         return result;
       }
     }
