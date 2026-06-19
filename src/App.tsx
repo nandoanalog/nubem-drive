@@ -1450,8 +1450,8 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
             <HardDrive size={17} />
           </span>
           <span className="vps-copy">
-            <strong>{formatSizeLabel(stats.storage.freeBytes)} free</strong>
-            <small>{stats.storage.usedPercent}% used</small>
+            <strong>{formatSizeLabel(stats.storage.freeBytes)} VPS free</strong>
+            <small>{stats.storage.usedPercent}% VPS used</small>
           </span>
         </div>
       </div>
