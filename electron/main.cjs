@@ -232,11 +232,17 @@ const normalizeVpsStats = (stats = {}) => {
           id: String(item?.id || ''),
           type: item?.type === 'download' ? 'download' : 'upload',
           status: ['uploading', 'pending', 'ready'].includes(item?.status) ? item.status : 'pending',
+          stage: ['client-to-vps', 'waiting-server', 'server-to-vps', 'vps-to-server', 'vps-to-client', 'ready'].includes(item?.stage)
+            ? item.stage
+            : 'waiting-server',
+          stageLabel: String(item?.stageLabel || ''),
           vaultName: String(item?.vaultName || 'Vault').slice(0, 120),
           clientName: String(item?.clientName || 'Client').slice(0, 120),
           fileName: String(item?.fileName || 'File').slice(0, 260),
           relativePath: String(item?.relativePath || '').slice(0, 2000),
           bytes: Number.isFinite(item?.bytes) ? Math.max(0, item.bytes) : 0,
+          transferredBytes: Number.isFinite(item?.transferredBytes) ? Math.max(0, item.transferredBytes) : 0,
+          totalBytes: Number.isFinite(item?.totalBytes) ? Math.max(0, item.totalBytes) : 0,
           createdAt: String(item?.createdAt || ''),
           updatedAt: String(item?.updatedAt || item?.createdAt || ''),
         }))

@@ -490,7 +490,6 @@ button:disabled {
 }
 
 .vps-route.queued {
-  grid-template-columns: 30px minmax(160px, 1fr) minmax(82px, auto) minmax(78px, auto);
   min-height: 42px;
   background: #fbfaf6;
 }
@@ -504,12 +503,19 @@ button:disabled {
   background: #eef1f0;
 }
 
-.route-icon.upload {
+.route-icon.client-to-vps,
+.route-icon.vps-to-server {
   color: #2f6fbe;
 }
 
-.route-icon.download {
+.route-icon.server-to-vps,
+.route-icon.vps-to-client,
+.route-icon.ready {
   color: #0f766e;
+}
+
+.route-icon.waiting-server {
+  color: #8a6f24;
 }
 
 .route-main {
@@ -563,6 +569,10 @@ button:disabled {
   background: #2f6fbe;
 }
 
+.route-progress.waiting span {
+  opacity: 0.28;
+}
+
 .queue-pill {
   justify-self: end;
   padding: 4px 7px;
@@ -580,6 +590,10 @@ button:disabled {
 
 .queue-pill.ready {
   color: #0f766e;
+}
+
+.queue-pill.moving {
+  color: #2f6fbe;
 }
 
 .vps-route-empty {

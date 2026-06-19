@@ -157,11 +157,15 @@ export type VpsQueueItem = {
   id: string
   type: 'upload' | 'download'
   status: 'uploading' | 'pending' | 'ready'
+  stage: 'client-to-vps' | 'waiting-server' | 'server-to-vps' | 'vps-to-server' | 'vps-to-client' | 'ready'
+  stageLabel: string
   vaultName: string
   clientName: string
   fileName: string
   relativePath: string
   bytes: number
+  transferredBytes: number
+  totalBytes: number
   createdAt: string
   updatedAt: string
 }

@@ -774,6 +774,26 @@ const chunkFileAsBinary = (request, file) => {
   return chunkFormat(request) === 'binary' ? data : Buffer.from(data.toString('utf8'), 'base64');
 };
 
+const requestChunkBytes = (request, field) => {
+  const chunks = request?.[field] && typeof request[field] === 'object' ? request[field] : {};
+  return Object.values(chunks).reduce((sum, bytes) => sum + Math.max(0, Number(bytes || 0)), 0);
+};
+
+const noteChunkProgress = (request, field, index, bytes) => {
+  const size = Math.max(0, Number(bytes || 0));
+  if (!Number.isFinite(size) || size <= 0) return;
+  request[field] = request[field] && typeof request[field] === 'object' ? request[field] : {};
+  request[field][String(index)] = size;
+
+  if (field === 'writtenChunks') {
+    request.uploadedBytes = requestChunkBytes(request, field);
+  }
+
+  if (field === 'readChunks') {
+    request.downloadedBytes = requestChunkBytes(request, field);
+  }
+};
+
 const touchChunkRequest = (state, request, force = false) => {
   const previousUpdatedAt = new Date(request.updatedAt || 0).getTime();
   request.updatedAt = now();
@@ -896,16 +916,56 @@ const queueStatsItem = (pair, request) => {
   const vault = requestStatsVault(pair, request);
   const relativePath = vault.relativePath || requestStatsPath(request);
   const fallbackName = relativePath.split('/').filter(Boolean).pop() || request.fileName || 'File';
+  const uploadedBytes = Math.max(0, Number(request.uploadedBytes || requestChunkBytes(request, 'writtenChunks') || 0));
+  const downloadedBytes = Math.max(0, Number(request.downloadedBytes || requestChunkBytes(request, 'readChunks') || 0));
+  const totalBytes = Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0));
+  let stage = 'waiting-server';
+  let stageLabel = 'Waiting for server poll';
+  let transferredBytes = 0;
+
+  if (request.type === 'upload') {
+    if (request.status === 'uploading') {
+      stage = 'client-to-vps';
+      stageLabel = 'Client -> VPS';
+      transferredBytes = uploadedBytes;
+    } else if (request.status === 'pending' && downloadedBytes > 0) {
+      stage = 'vps-to-server';
+      stageLabel = 'VPS -> server';
+      transferredBytes = downloadedBytes;
+    } else if (request.status === 'ready') {
+      stage = 'ready';
+      stageLabel = 'Done';
+      transferredBytes = totalBytes || uploadedBytes;
+    } else {
+      transferredBytes = uploadedBytes || totalBytes;
+    }
+  } else if (request.status === 'pending' && uploadedBytes > 0) {
+    stage = 'server-to-vps';
+    stageLabel = 'Server -> VPS';
+    transferredBytes = uploadedBytes;
+  } else if (request.status === 'ready' && downloadedBytes > 0) {
+    stage = 'vps-to-client';
+    stageLabel = 'VPS -> client';
+    transferredBytes = downloadedBytes;
+  } else if (request.status === 'ready') {
+    stage = 'ready';
+    stageLabel = 'Ready on VPS';
+    transferredBytes = totalBytes || uploadedBytes;
+  }
 
   return {
     id: String(request.id || ''),
     type: request.type === 'download' ? 'download' : 'upload',
     status: ['uploading', 'pending', 'ready'].includes(request.status) ? request.status : 'pending',
+    stage,
+    stageLabel,
     vaultName: vault.vaultName,
     clientName: vault.clientName,
     fileName: String(request.fileName || request.result?.fileName || fallbackName || 'File').slice(0, 260),
     relativePath,
-    bytes: Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0)),
+    bytes: totalBytes || uploadedBytes || downloadedBytes,
+    transferredBytes,
+    totalBytes,
     createdAt: String(request.createdAt || ''),
     updatedAt: String(request.updatedAt || request.createdAt || ''),
   };
@@ -1260,6 +1320,7 @@ const handlers = {
       }
     }
 
+    request.uploadedBytes = Math.max(request.uploadedBytes || 0, requestChunkBytes(request, 'writtenChunks'), Number(request.totalBytes || 0));
     request.status = 'pending';
     request.updatedAt = now();
     writeState(state);
@@ -1329,6 +1390,9 @@ const handlers = {
     request.status = body.error ? 'error' : 'ready';
     request.error = body.error ? String(body.error).slice(0, 500) : '';
     request.result = body.result || null;
+    if (Number.isFinite(request.result?.totalBytes)) {
+      request.totalBytes = Math.max(Number(request.totalBytes || 0), Number(request.result.totalBytes || 0));
+    }
     request.updatedAt = now();
     if (body.error || request.type === 'upload') {
       fs.rmSync(chunkDir(request.id), { recursive: true, force: true });
@@ -1411,10 +1475,13 @@ const handlers = {
       }
 
       fs.mkdirSync(chunkDir(request.id), { recursive: true });
-      fs.writeFileSync(chunkPath(request.id, Number(body.index || 0)), String(body.data));
-      recordTraffic('inbound', Buffer.byteLength(String(body.data || ''), 'base64'));
+      const index = Number(body.index || 0);
+      const bytes = Buffer.byteLength(String(body.data || ''), 'base64');
+      fs.writeFileSync(chunkPath(request.id, index), String(body.data));
+      recordTraffic('inbound', bytes);
+      noteChunkProgress(request, 'writtenChunks', index, bytes);
       request.chunkFormat = 'base64';
-      touchChunkRequest(state, request, Number(body.index || 0) === 0);
+      touchChunkRequest(state, request, index === 0);
       return { ok: true };
     }
 
@@ -1429,7 +1496,10 @@ const handlers = {
     }
 
     const data = chunkFileAsBase64(request, file);
-    recordTraffic('outbound', Buffer.byteLength(data, 'base64'));
+    const bytes = Buffer.byteLength(data, 'base64');
+    recordTraffic('outbound', bytes);
+    noteChunkProgress(request, 'readChunks', Number(body.index || 0), bytes);
+    touchChunkRequest(state, request, Number(body.index || 0) === 0);
     return { ok: true, data };
   },
 
@@ -1469,6 +1539,7 @@ const handlers = {
       fs.mkdirSync(chunkDir(relayRequest.id), { recursive: true });
       fs.writeFileSync(chunkPath(relayRequest.id, index), body);
       recordTraffic('inbound', body.length);
+      noteChunkProgress(relayRequest, 'writtenChunks', index, body.length);
       touchChunkRequest(state, relayRequest, index === 0 || previousFormat !== 'binary');
       return { ok: true };
     }
@@ -1485,6 +1556,8 @@ const handlers = {
 
     const binary = chunkFileAsBinary(relayRequest, file);
     recordTraffic('outbound', binary.length);
+    noteChunkProgress(relayRequest, 'readChunks', index, binary.length);
+    touchChunkRequest(state, relayRequest, index === 0);
     return { binary };
   },
 };

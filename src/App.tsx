@@ -511,11 +511,15 @@ function currentVpsStats(state: AppState): VpsStats {
           id: item.id || '',
           type: item.type === 'download' ? 'download' as const : 'upload' as const,
           status: item.status === 'uploading' || item.status === 'ready' ? item.status : 'pending' as const,
+          stage: item.stage || 'waiting-server',
+          stageLabel: item.stageLabel || '',
           vaultName: item.vaultName || 'Vault',
           clientName: item.clientName || 'Client',
           fileName: item.fileName || 'File',
           relativePath: item.relativePath || '',
           bytes: Math.max(0, item.bytes || 0),
+          transferredBytes: Math.max(0, item.transferredBytes || 0),
+          totalBytes: Math.max(0, item.totalBytes || 0),
           createdAt: item.createdAt || '',
           updatedAt: item.updatedAt || item.createdAt || '',
         }))
@@ -1273,36 +1277,93 @@ function RemoteBrowser({
   )
 }
 
-function vaultRouteLabel(vaultName: string, clientName: string) {
-  const vault = (vaultName || 'Vault').trim()
-  const client = (clientName || 'Client').trim()
-  return vault.toLowerCase() === client.toLowerCase() ? `${vault} vault` : vault
+type PipelineRow = {
+  id: string
+  stage: string
+  stageLabel: string
+  status: string
+  clientName: string
+  vaultName: string
+  fileName: string
+  relativePath: string
+  transferredBytes: number
+  totalBytes: number
+  rateBytesPerSecond: number
+  active: boolean
 }
 
-function transferRoute(transfer: TrafficTransfer) {
-  const vault = vaultRouteLabel(transfer.vaultName, transfer.clientName)
-  return transfer.direction === 'upload'
-    ? { from: transfer.clientName, to: vault, verb: 'Client to vault' }
-    : { from: vault, to: transfer.clientName, verb: 'Vault to client' }
+function transferPipelineRow(transfer: TrafficTransfer): PipelineRow {
+  const stage = transfer.direction === 'upload' ? 'vps-to-server' : 'server-to-vps'
+  return {
+    id: transfer.id,
+    stage,
+    stageLabel: stage === 'vps-to-server' ? 'VPS -> server' : 'Server -> VPS',
+    status: 'moving',
+    clientName: transfer.clientName,
+    vaultName: transfer.vaultName,
+    fileName: transfer.fileName,
+    relativePath: transfer.relativePath,
+    transferredBytes: transfer.transferredBytes,
+    totalBytes: transfer.totalBytes,
+    rateBytesPerSecond: transfer.rateBytesPerSecond,
+    active: true,
+  }
 }
 
-function queueRoute(item: VpsQueueItem) {
-  const vault = vaultRouteLabel(item.vaultName, item.clientName)
-  return item.type === 'upload'
-    ? { from: item.clientName, to: vault, verb: item.status === 'uploading' ? 'Client to vault' : 'Waiting' }
-    : { from: vault, to: item.clientName, verb: item.status === 'ready' ? 'Vault to client' : 'Waiting' }
+function queuePipelineRow(item: VpsQueueItem): PipelineRow {
+  return {
+    id: item.id,
+    stage: item.stage,
+    stageLabel: item.stageLabel || stageLabel(item.stage),
+    status: item.status,
+    clientName: item.clientName,
+    vaultName: item.vaultName,
+    fileName: item.fileName,
+    relativePath: item.relativePath,
+    transferredBytes: item.transferredBytes,
+    totalBytes: item.totalBytes || item.bytes,
+    rateBytesPerSecond: 0,
+    active: item.stage !== 'waiting-server' && item.stage !== 'ready',
+  }
+}
+
+function stageLabel(stage: string) {
+  switch (stage) {
+    case 'client-to-vps':
+      return 'Client -> VPS'
+    case 'server-to-vps':
+      return 'Server -> VPS'
+    case 'vps-to-server':
+      return 'VPS -> server'
+    case 'vps-to-client':
+      return 'VPS -> client'
+    case 'ready':
+      return 'Ready'
+    default:
+      return 'Waiting for server poll'
+  }
 }
 
 function routePath(relativePath: string, fallback: string) {
   return relativePath || fallback || 'File'
 }
 
+function rowPercent(row: PipelineRow) {
+  return transferPercent({
+    transferredBytes: row.transferredBytes,
+    totalBytes: row.totalBytes,
+  })
+}
+
 function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: TrafficTransfer[] }) {
-  const visibleTransfers = transfers.slice(0, 4)
-  const activeIds = new Set(visibleTransfers.map((transfer) => transfer.id))
-  const visibleQueue = (stats.queue.items || [])
+  const transferRows = transfers.slice(0, 4).map(transferPipelineRow)
+  const activeIds = new Set(transferRows.map((transfer) => transfer.id))
+  const queueRows = (stats.queue.items || [])
     .filter((item) => !activeIds.has(item.id))
-    .slice(0, visibleTransfers.length > 0 ? 3 : 5)
+    .slice(0, transferRows.length > 0 ? 4 : 6)
+    .map(queuePipelineRow)
+  const rows = [...transferRows, ...queueRows].slice(0, 8)
+  const movingCount = rows.filter((row) => row.active).length
 
   return (
     <section className="server-vps-panel" aria-label="VPS">
@@ -1345,30 +1406,34 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
 
       <div className="vps-routes" aria-label="Traffic routes">
         <div className="vps-routes-head">
-          <strong>Now</strong>
-          <span>{visibleTransfers.length > 0 ? `${visibleTransfers.length} moving` : 'Quiet'}</span>
+          <strong>Files</strong>
+          <span>{movingCount > 0 ? `${movingCount} moving` : 'Nothing moving'}</span>
         </div>
 
-        {visibleTransfers.length > 0 ? (
+        {rows.length > 0 ? (
           <div className="vps-route-list">
-            {visibleTransfers.map((transfer) => {
-              const route = transferRoute(transfer)
-              const percent = transferPercent(transfer)
-              const DirectionIcon = transfer.direction === 'upload' ? ArrowDown : ArrowUp
+            {rows.map((row) => {
+              const percent = rowPercent(row)
+              const isWaiting = row.stage === 'waiting-server'
+              const DirectionIcon = row.stage === 'client-to-vps' || row.stage === 'vps-to-server' ? ArrowDown : ArrowUp
               return (
-                <div className="vps-route active" key={transfer.id}>
-                  <span className={`route-icon ${transfer.direction}`}>
+                <div className={`vps-route ${row.active ? 'active' : 'queued'}`} key={`${row.stage}-${row.id}`}>
+                  <span className={`route-icon ${row.stage}`}>
                     <DirectionIcon size={15} />
                   </span>
                   <span className="route-main">
-                    <strong>{route.from} -&gt; VPS -&gt; {route.to}</strong>
-                    <small>{route.verb} / {routePath(transfer.relativePath, transfer.fileName)}</small>
+                    <strong>{row.stageLabel}</strong>
+                    <small>{row.clientName} / {row.vaultName} / {routePath(row.relativePath, row.fileName)}</small>
                   </span>
-                  <span className="route-size">{formatSizeLabel(transfer.transferredBytes)} / {formatSizeLabel(transfer.totalBytes)}</span>
-                  <span className="route-progress" title={`${percent}%`}>
-                    <span style={{ width: `${percent}%` }} />
+                  <span className="route-size">
+                    {row.totalBytes > 0
+                      ? `${formatSizeLabel(row.transferredBytes)} / ${formatSizeLabel(row.totalBytes)}`
+                      : formatSizeLabel(row.transferredBytes || row.totalBytes)}
                   </span>
-                  <span className="route-rate">{formatRate(transfer.rateBytesPerSecond)}</span>
+                  <span className={`route-progress ${isWaiting || !row.totalBytes ? 'waiting' : ''}`} title={row.totalBytes ? `${percent}%` : row.stageLabel}>
+                    <span style={{ width: row.totalBytes ? `${percent}%` : '100%' }} />
+                  </span>
+                  <span className={row.rateBytesPerSecond > 0 ? 'route-rate' : `queue-pill ${row.status}`}>{row.rateBytesPerSecond > 0 ? formatRate(row.rateBytesPerSecond) : row.status}</span>
                 </div>
               )
             })}
@@ -1376,34 +1441,6 @@ function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: Traf
         ) : (
           <div className="vps-route-empty">No live file traffic</div>
         )}
-
-        {visibleQueue.length > 0 ? (
-          <>
-            <div className="vps-routes-head queue-head">
-              <strong>Queue</strong>
-              <span>{stats.queue.files.toLocaleString()} files</span>
-            </div>
-            <div className="vps-route-list queued">
-              {visibleQueue.map((item) => {
-                const route = queueRoute(item)
-                const DirectionIcon = item.type === 'upload' ? ArrowDown : ArrowUp
-                return (
-                  <div className="vps-route queued" key={item.id}>
-                    <span className={`route-icon ${item.type}`}>
-                      <DirectionIcon size={15} />
-                    </span>
-                    <span className="route-main">
-                      <strong>{route.from} -&gt; VPS -&gt; {route.to}</strong>
-                      <small>{route.verb} / {routePath(item.relativePath, item.fileName)}</small>
-                    </span>
-                    <span className="route-size">{formatSizeLabel(item.bytes)}</span>
-                    <span className={`queue-pill ${item.status}`}>{item.status}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </>
-        ) : null}
       </div>
     </section>
   )
