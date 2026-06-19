@@ -153,6 +153,19 @@ export type TrafficState = {
   active: TrafficTransfer[]
 }
 
+export type VpsQueueItem = {
+  id: string
+  type: 'upload' | 'download'
+  status: 'uploading' | 'pending' | 'ready'
+  vaultName: string
+  clientName: string
+  fileName: string
+  relativePath: string
+  bytes: number
+  createdAt: string
+  updatedAt: string
+}
+
 export type VpsStats = {
   updatedAt: string
   traffic: {
@@ -163,6 +176,7 @@ export type VpsStats = {
     files: number
     bytes: number
     oldestAt: string
+    items: VpsQueueItem[]
   }
   storage: {
     usedBytes: number

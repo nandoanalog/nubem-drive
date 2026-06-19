@@ -24,7 +24,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob, VpsStats } from './types'
+import type { AppState, CloudFolder, FolderStatus, RemoteEntry, RemoteListing, ShareLinkResult, SyncJob, TrafficTransfer, VpsQueueItem, VpsStats } from './types'
 
 type FilterKey = 'all' | 'local' | 'online' | 'syncing'
 type PairBusy = 'retry' | null
@@ -97,6 +97,7 @@ const demoState: AppState = {
       files: 0,
       bytes: 0,
       oldestAt: '',
+      items: [],
     },
     storage: {
       usedBytes: 0,
@@ -503,6 +504,24 @@ function formatRate(bytesPerSecond: number) {
 }
 
 function currentVpsStats(state: AppState): VpsStats {
+  const queueItems = Array.isArray(state.vpsStats?.queue?.items)
+    ? state.vpsStats.queue.items
+        .slice(0, 12)
+        .map((item) => ({
+          id: item.id || '',
+          type: item.type === 'download' ? 'download' as const : 'upload' as const,
+          status: item.status === 'uploading' || item.status === 'ready' ? item.status : 'pending' as const,
+          vaultName: item.vaultName || 'Vault',
+          clientName: item.clientName || 'Client',
+          fileName: item.fileName || 'File',
+          relativePath: item.relativePath || '',
+          bytes: Math.max(0, item.bytes || 0),
+          createdAt: item.createdAt || '',
+          updatedAt: item.updatedAt || item.createdAt || '',
+        }))
+        .filter((item) => item.id)
+    : []
+
   return {
     updatedAt: state.vpsStats?.updatedAt || '',
     traffic: {
@@ -513,6 +532,7 @@ function currentVpsStats(state: AppState): VpsStats {
       files: Math.max(0, state.vpsStats?.queue?.files || 0),
       bytes: Math.max(0, state.vpsStats?.queue?.bytes || 0),
       oldestAt: state.vpsStats?.queue?.oldestAt || '',
+      items: queueItems,
     },
     storage: {
       usedBytes: Math.max(0, state.vpsStats?.storage?.usedBytes || 0),
@@ -521,6 +541,31 @@ function currentVpsStats(state: AppState): VpsStats {
       usedPercent: Math.max(0, Math.min(100, state.vpsStats?.storage?.usedPercent || 0)),
     },
   }
+}
+
+function currentServerTransfers(state: AppState): TrafficTransfer[] {
+  const cutoff = Date.now() - 20_000
+  return Array.isArray(state.traffic?.active)
+    ? state.traffic.active
+        .filter((transfer) => transfer.id && new Date(transfer.updatedAt || 0).getTime() >= cutoff)
+        .map((transfer) => ({
+          ...transfer,
+          direction: transfer.direction === 'download' ? 'download' as const : 'upload' as const,
+          vaultName: transfer.vaultName || 'Vault',
+          clientName: transfer.clientName || 'Client',
+          fileName: transfer.fileName || 'File',
+          relativePath: transfer.relativePath || '',
+          totalBytes: Math.max(0, transfer.totalBytes || 0),
+          transferredBytes: Math.max(0, transfer.transferredBytes || 0),
+          rateBytesPerSecond: Math.max(0, transfer.rateBytesPerSecond || 0),
+        }))
+        .sort((left, right) => right.rateBytesPerSecond - left.rateBytesPerSecond)
+    : []
+}
+
+function transferPercent(transfer: Pick<TrafficTransfer, 'totalBytes' | 'transferredBytes'>) {
+  if (!transfer.totalBytes) return 0
+  return Math.max(0, Math.min(100, Math.round((transfer.transferredBytes / transfer.totalBytes) * 100)))
 }
 
 function matchesFilter(folder: CloudFolder, filter: FilterKey) {
@@ -597,6 +642,7 @@ function App() {
   const selectedIsLinkedClientVault = selectedIsClientVault && Boolean(selectedFolder?.pairId && selectedFolder.token)
   const isServerApp = state.appMode === 'server'
   const serverVpsStats = useMemo(() => currentVpsStats(state), [state])
+  const serverTransfers = useMemo(() => currentServerTransfers(state), [state])
   const connection = connectionSummary(state, pairBusy, pairError)
   const canChooseFolders = isServerApp || Boolean(selectedIsLinkedClientVault)
   const chooseFoldersTitle = isServerApp
@@ -936,7 +982,7 @@ function App() {
             ) : (
               <>
                 {isServerApp ? (
-                  <ServerVpsPanel stats={serverVpsStats} />
+                  <ServerVpsPanel stats={serverVpsStats} transfers={serverTransfers} />
                 ) : null}
 
                 <div className="browser-toolbar">
@@ -1227,42 +1273,129 @@ function RemoteBrowser({
   )
 }
 
-function ServerVpsPanel({ stats }: { stats: VpsStats }) {
+function transferRoute(transfer: TrafficTransfer) {
+  return transfer.direction === 'upload'
+    ? { from: transfer.clientName, to: transfer.vaultName, verb: 'Receiving' }
+    : { from: transfer.vaultName, to: transfer.clientName, verb: 'Sending' }
+}
+
+function queueRoute(item: VpsQueueItem) {
+  return item.type === 'upload'
+    ? { from: item.clientName, to: item.vaultName, verb: item.status === 'uploading' ? 'Uploading' : 'Waiting' }
+    : { from: item.vaultName, to: item.clientName, verb: item.status === 'ready' ? 'Ready' : 'Waiting' }
+}
+
+function routePath(relativePath: string, fallback: string) {
+  return relativePath || fallback || 'File'
+}
+
+function ServerVpsPanel({ stats, transfers }: { stats: VpsStats; transfers: TrafficTransfer[] }) {
+  const visibleTransfers = transfers.slice(0, 4)
+  const activeIds = new Set(visibleTransfers.map((transfer) => transfer.id))
+  const visibleQueue = (stats.queue.items || [])
+    .filter((item) => !activeIds.has(item.id))
+    .slice(0, visibleTransfers.length > 0 ? 3 : 5)
+
   return (
     <section className="server-vps-panel" aria-label="VPS">
-      <div className="vps-metric">
-        <span className="vps-icon traffic">
-          <RefreshCcw size={17} />
-        </span>
-        <span className="vps-copy">
-          <strong>Traffic</strong>
-          <small>
-            <ArrowDown size={13} />
-            {formatRate(stats.traffic.inboundBytesPerSecond)}
-            <ArrowUp size={13} />
-            {formatRate(stats.traffic.outboundBytesPerSecond)}
-          </small>
-        </span>
+      <div className="vps-metrics">
+        <div className="vps-metric">
+          <span className="vps-icon traffic">
+            <RefreshCcw size={17} />
+          </span>
+          <span className="vps-copy">
+            <strong>Traffic</strong>
+            <small>
+              <ArrowDown size={13} />
+              {formatRate(stats.traffic.inboundBytesPerSecond)}
+              <ArrowUp size={13} />
+              {formatRate(stats.traffic.outboundBytesPerSecond)}
+            </small>
+          </span>
+        </div>
+
+        <div className="vps-metric">
+          <span className="vps-icon queue">
+            <FileText size={17} />
+          </span>
+          <span className="vps-copy">
+            <strong>{stats.queue.files.toLocaleString()} files</strong>
+            <small>Queue / {formatSizeLabel(stats.queue.bytes)}</small>
+          </span>
+        </div>
+
+        <div className="vps-metric">
+          <span className="vps-icon storage">
+            <HardDrive size={17} />
+          </span>
+          <span className="vps-copy">
+            <strong>{formatSizeLabel(stats.storage.freeBytes)} free</strong>
+            <small>{stats.storage.usedPercent}% used</small>
+          </span>
+        </div>
       </div>
 
-      <div className="vps-metric">
-        <span className="vps-icon queue">
-          <FileText size={17} />
-        </span>
-        <span className="vps-copy">
-          <strong>{stats.queue.files.toLocaleString()} files</strong>
-          <small>Queue · {formatSizeLabel(stats.queue.bytes)}</small>
-        </span>
-      </div>
+      <div className="vps-routes" aria-label="Traffic routes">
+        <div className="vps-routes-head">
+          <strong>Now</strong>
+          <span>{visibleTransfers.length > 0 ? `${visibleTransfers.length} moving` : 'Quiet'}</span>
+        </div>
 
-      <div className="vps-metric">
-        <span className="vps-icon storage">
-          <HardDrive size={17} />
-        </span>
-        <span className="vps-copy">
-          <strong>{formatSizeLabel(stats.storage.freeBytes)} free</strong>
-          <small>{stats.storage.usedPercent}% used</small>
-        </span>
+        {visibleTransfers.length > 0 ? (
+          <div className="vps-route-list">
+            {visibleTransfers.map((transfer) => {
+              const route = transferRoute(transfer)
+              const percent = transferPercent(transfer)
+              const DirectionIcon = transfer.direction === 'upload' ? ArrowDown : ArrowUp
+              return (
+                <div className="vps-route active" key={transfer.id}>
+                  <span className={`route-icon ${transfer.direction}`}>
+                    <DirectionIcon size={15} />
+                  </span>
+                  <span className="route-main">
+                    <strong>{route.from} -&gt; {route.to}</strong>
+                    <small>{route.verb} / {routePath(transfer.relativePath, transfer.fileName)}</small>
+                  </span>
+                  <span className="route-size">{formatSizeLabel(transfer.transferredBytes)} / {formatSizeLabel(transfer.totalBytes)}</span>
+                  <span className="route-progress" title={`${percent}%`}>
+                    <span style={{ width: `${percent}%` }} />
+                  </span>
+                  <span className="route-rate">{formatRate(transfer.rateBytesPerSecond)}</span>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="vps-route-empty">No live file traffic</div>
+        )}
+
+        {visibleQueue.length > 0 ? (
+          <>
+            <div className="vps-routes-head queue-head">
+              <strong>Queue</strong>
+              <span>{stats.queue.files.toLocaleString()} files</span>
+            </div>
+            <div className="vps-route-list queued">
+              {visibleQueue.map((item) => {
+                const route = queueRoute(item)
+                const DirectionIcon = item.type === 'upload' ? ArrowDown : ArrowUp
+                return (
+                  <div className="vps-route queued" key={item.id}>
+                    <span className={`route-icon ${item.type}`}>
+                      <DirectionIcon size={15} />
+                    </span>
+                    <span className="route-main">
+                      <strong>{route.from} -&gt; {route.to}</strong>
+                      <small>{route.verb} / {routePath(item.relativePath, item.fileName)}</small>
+                    </span>
+                    <span className="route-size">{formatSizeLabel(item.bytes)}</span>
+                    <span className={`queue-pill ${item.status}`}>{item.status}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        ) : null}
       </div>
     </section>
   )

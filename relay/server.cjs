@@ -861,11 +861,62 @@ const pairsForStats = (state, credentials) => {
   return pairs;
 };
 
+const requestStatsPath = (request) => {
+  try {
+    return normalizeRemotePath(request.relativePath || request.fileName || '');
+  } catch {
+    return String(request.relativePath || request.fileName || '').replace(/\\/g, '/').split('/').filter(Boolean).join('/');
+  }
+};
+
+const requestStatsVault = (pair, request) => {
+  const relativePath = requestStatsPath(request);
+  const firstSegment = relativePath.split('/').filter(Boolean)[0] || '';
+  const client = pair.clients?.[request.requesterId] || Object.values(pair.clients || {}).find((item) => {
+    const prefix = safePathName(item.remotePathPrefix || item.name || 'Client', 'Client');
+    return prefix === firstSegment;
+  });
+  const prefix = safePathName(client?.remotePathPrefix || client?.name || firstSegment || 'Client', 'Client');
+  let pathInsideVault = relativePath;
+
+  try {
+    pathInsideVault = stripPathPrefix(prefix, relativePath);
+  } catch {
+    pathInsideVault = relativePath.startsWith(`${prefix}/`) ? relativePath.slice(prefix.length + 1) : relativePath;
+  }
+
+  return {
+    clientName: String(client?.name || firstSegment || 'Client').slice(0, 80),
+    vaultName: safePathName(client?.vaultName || firstSegment || pair.vault?.name || 'Vault', 'Vault'),
+    relativePath: pathInsideVault || relativePath,
+  };
+};
+
+const queueStatsItem = (pair, request) => {
+  const vault = requestStatsVault(pair, request);
+  const relativePath = vault.relativePath || requestStatsPath(request);
+  const fallbackName = relativePath.split('/').filter(Boolean).pop() || request.fileName || 'File';
+
+  return {
+    id: String(request.id || ''),
+    type: request.type === 'download' ? 'download' : 'upload',
+    status: ['uploading', 'pending', 'ready'].includes(request.status) ? request.status : 'pending',
+    vaultName: vault.vaultName,
+    clientName: vault.clientName,
+    fileName: String(request.fileName || request.result?.fileName || fallbackName || 'File').slice(0, 260),
+    relativePath,
+    bytes: Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0)),
+    createdAt: String(request.createdAt || ''),
+    updatedAt: String(request.updatedAt || request.createdAt || ''),
+  };
+};
+
 const queueStats = (pairs) => {
   let files = 0;
   let bytes = 0;
   let oldestAt = '';
   let oldestTime = Number.POSITIVE_INFINITY;
+  const items = [];
 
   for (const pair of pairs) {
     for (const request of Object.values(pair.requests || {})) {
@@ -874,6 +925,7 @@ const queueStats = (pairs) => {
 
       files += 1;
       bytes += Math.max(0, Number(request.totalBytes || request.result?.totalBytes || 0));
+      items.push(queueStatsItem(pair, request));
 
       const createdAt = new Date(request.createdAt || request.updatedAt || 0).getTime();
       if (Number.isFinite(createdAt) && createdAt < oldestTime) {
@@ -883,7 +935,14 @@ const queueStats = (pairs) => {
     }
   }
 
-  return { files, bytes, oldestAt };
+  items.sort((left, right) => {
+    const statusOrder = { uploading: 0, pending: 1, ready: 2 };
+    const statusDelta = statusOrder[left.status] - statusOrder[right.status];
+    if (statusDelta !== 0) return statusDelta;
+    return new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime();
+  });
+
+  return { files, bytes, oldestAt, items: items.slice(0, 12) };
 };
 
 const vpsStatsPayload = (state, credentials = []) => {

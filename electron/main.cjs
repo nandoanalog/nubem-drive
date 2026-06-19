@@ -210,6 +210,7 @@ const emptyVpsStats = () => ({
     files: 0,
     bytes: 0,
     oldestAt: '',
+    items: [],
   },
   storage: {
     usedBytes: 0,
@@ -224,6 +225,23 @@ const normalizeVpsStats = (stats = {}) => {
   const traffic = stats.traffic || {};
   const queue = stats.queue || {};
   const storage = stats.storage || {};
+  const queueItems = Array.isArray(queue.items)
+    ? queue.items
+        .slice(0, 12)
+        .map((item) => ({
+          id: String(item?.id || ''),
+          type: item?.type === 'download' ? 'download' : 'upload',
+          status: ['uploading', 'pending', 'ready'].includes(item?.status) ? item.status : 'pending',
+          vaultName: String(item?.vaultName || 'Vault').slice(0, 120),
+          clientName: String(item?.clientName || 'Client').slice(0, 120),
+          fileName: String(item?.fileName || 'File').slice(0, 260),
+          relativePath: String(item?.relativePath || '').slice(0, 2000),
+          bytes: Number.isFinite(item?.bytes) ? Math.max(0, item.bytes) : 0,
+          createdAt: String(item?.createdAt || ''),
+          updatedAt: String(item?.updatedAt || item?.createdAt || ''),
+        }))
+        .filter((item) => item.id)
+    : [];
   const totalBytes = Number.isFinite(storage.totalBytes) ? Math.max(0, storage.totalBytes) : fresh.storage.totalBytes;
   const usedBytes = Number.isFinite(storage.usedBytes) ? Math.max(0, storage.usedBytes) : fresh.storage.usedBytes;
   const freeBytes = Number.isFinite(storage.freeBytes) ? Math.max(0, storage.freeBytes) : fresh.storage.freeBytes;
@@ -247,6 +265,7 @@ const normalizeVpsStats = (stats = {}) => {
       files: Number.isFinite(queue.files) ? Math.max(0, queue.files) : 0,
       bytes: Number.isFinite(queue.bytes) ? Math.max(0, queue.bytes) : 0,
       oldestAt: String(queue.oldestAt || ''),
+      items: queueItems,
     },
     storage: {
       usedBytes,

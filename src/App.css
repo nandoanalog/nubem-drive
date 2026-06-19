@@ -427,9 +427,14 @@ button:disabled {
 
 .server-vps-panel {
   display: grid;
+  border-bottom: 1px solid #e5dfd4;
+  background: #fbfaf6;
+}
+
+.vps-metrics {
+  display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
-  border-bottom: 1px solid #e5dfd4;
   background: #e5dfd4;
 }
 
@@ -441,6 +446,149 @@ button:disabled {
   min-height: 58px;
   padding: 10px 12px;
   background: #fbfaf6;
+}
+
+.vps-routes {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid #e5dfd4;
+  background: #fffdf8;
+}
+
+.vps-routes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 12px;
+  color: #68716d;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.vps-routes-head strong {
+  color: #252b28;
+  font-size: 12px;
+}
+
+.queue-head {
+  border-top: 1px solid #eee8dd;
+}
+
+.vps-route-list {
+  display: grid;
+}
+
+.vps-route {
+  display: grid;
+  grid-template-columns: 30px minmax(160px, 1fr) minmax(90px, auto) minmax(84px, 132px) minmax(72px, auto);
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 7px 12px;
+  border-top: 1px solid #f0eadf;
+}
+
+.vps-route.queued {
+  grid-template-columns: 30px minmax(160px, 1fr) minmax(82px, auto) minmax(78px, auto);
+  min-height: 42px;
+  background: #fbfaf6;
+}
+
+.route-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 7px;
+  background: #eef1f0;
+}
+
+.route-icon.upload {
+  color: #2f6fbe;
+}
+
+.route-icon.download {
+  color: #0f766e;
+}
+
+.route-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.route-main strong,
+.route-main small,
+.route-size,
+.route-rate,
+.queue-pill {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-main strong {
+  color: #202623;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.route-main small,
+.route-size,
+.route-rate {
+  color: #68716d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.route-size,
+.route-rate {
+  text-align: right;
+}
+
+.route-progress {
+  display: block;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e3ded5;
+}
+
+.route-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2f6fbe;
+}
+
+.queue-pill {
+  justify-self: end;
+  padding: 4px 7px;
+  border: 1px solid #ded8ce;
+  border-radius: 7px;
+  color: #59615e;
+  background: #fffdf8;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.queue-pill.uploading {
+  color: #2f6fbe;
+}
+
+.queue-pill.ready {
+  color: #0f766e;
+}
+
+.vps-route-empty {
+  min-height: 42px;
+  padding: 12px;
+  border-top: 1px solid #f0eadf;
+  color: #68716d;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .vps-icon {
@@ -1308,12 +1456,33 @@ input:focus-visible {
     display: none;
   }
 
-  .server-vps-panel {
+  .vps-metrics {
     grid-template-columns: 1fr;
   }
 
   .vps-metric {
     min-height: 54px;
+  }
+
+  .vps-route,
+  .vps-route.queued {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .route-progress {
+    grid-column: 2 / 4;
+  }
+
+  .route-rate,
+  .queue-pill {
+    grid-column: 3 / 4;
+    grid-row: 1;
+  }
+
+  .route-size {
+    grid-column: 2 / 4;
+    text-align: left;
   }
 
   .server-vault-row {
